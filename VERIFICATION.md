@@ -27,6 +27,16 @@ Default CPU threads 14
 `pip check` reported no broken requirements. Python bytecode compilation and
 the PowerShell/Bash launcher syntax checks passed.
 
+Rerunning `setup.ps1` against the existing virtual environment completed
+successfully: pinned runtime packages were already satisfied, the editable
+package was reinstalled, and `pip check` passed again. This confirms
+idempotence for the tested environment; it is not a fully hermetic rebuild
+because Ubuntu repositories and upgraded pip build tooling are not pinned.
+
+Dated disk usage after installation was approximately 1.2 GB for
+`~/.venvs/gpt2-xl` and 6.0 GB for the complete Hugging Face cache containing
+the filtered GPT-2 XL download.
+
 ## Checkpoint
 
 ```text

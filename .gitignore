@@ -10,3 +10,12 @@ build/
 # Generated output and local configuration
 outputs/
 .env
+
+# Large local model/runtime artifacts
+*.safetensors
+pytorch_model*.bin
+*.ckpt
+*.gguf
+*.onnx
+.huggingface/
+model-cache/
