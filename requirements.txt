@@ -1,0 +1,5 @@
+# Install the CPU-only PyTorch wheel separately first; see scripts/setup-wsl.sh.
+accelerate>=1.0,<2
+huggingface-hub>=0.27,<2
+safetensors>=0.4,<1
+transformers>=5.18,<6

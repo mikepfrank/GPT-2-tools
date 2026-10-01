@@ -1,0 +1,11 @@
+* text=auto
+
+# Keep WSL/Linux entry points executable without CRLF interpreter failures.
+*.sh text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# PowerShell entry points are intended for Windows.
+*.ps1 text eol=crlf

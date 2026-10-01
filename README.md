@@ -1,0 +1,114 @@
+# Local GPT-2 XL
+
+This project runs OpenAI's original **1.5-billion-parameter GPT-2 XL** learned
+checkpoint locally. It uses Hugging Face's modern PyTorch/safetensors
+conversion of that historical checkpoint, rather than the archived 2019
+TensorFlow 1.12 runner. It is the same trained model, repacked into a current
+file format; it is not a byte-identical copy of OpenAI's TensorFlow checkpoint.
+
+The target machine is CPU-only: a 13th-generation Intel Core i7 with 32 GB of
+RAM, Ubuntu 24.04 under WSL 2, and Intel UHD graphics. The full FP32 checkpoint
+fits in memory, but generation will be much slower than on a modern discrete
+GPU.
+
+## Install in WSL 2
+
+From PowerShell in this directory:
+
+```powershell
+./setup.ps1
+```
+
+The script installs Ubuntu's Python venv support, creates
+`~/.venvs/gpt2-xl`, installs CPU-only PyTorch, and installs this project.
+
+Then download only the files needed for GPT-2 XL's safetensors checkpoint
+(about 6.43 GB), and verify the checkpoint's SHA-256:
+
+```powershell
+./setup.ps1 -DownloadModel
+```
+
+The model stays in WSL's normal Hugging Face cache, usually
+`~/.cache/huggingface/hub`, rather than being copied into this project.
+
+## Run it
+
+Start an interactive session from PowerShell:
+
+```powershell
+./run.ps1
+```
+
+Or generate one continuation:
+
+```powershell
+./run.ps1 "Reversible computing is" -MaxNewTokens 60 -Seed 42
+```
+
+The first model load can take a while and needs several additional gigabytes
+of memory. Close memory-heavy applications first. After the model is cached,
+use `-Offline` to prohibit network access:
+
+```powershell
+./run.ps1 "In the future," -Offline
+```
+
+Inside Ubuntu, the equivalent commands are:
+
+```bash
+source ~/.venvs/gpt2-xl/bin/activate
+gpt2-xl --info
+gpt2-xl "Reversible computing is" --max-new-tokens 60 --seed 42
+gpt2-xl                         # interactive mode
+```
+
+## What this is—and is not
+
+- The checkpoint is `openai-community/gpt2-xl`, pinned to revision
+  `15ea56dee5df4983c59b2538573817e1667135e2`: the original GPT-2 XL model
+  with 1,558 million parameters, a 1,024-token context window, and FP32
+  weights.
+- It is a base text-completion model, not an instruction-following assistant.
+  Prompt it with the beginning of the kind of text you want it to continue.
+- The runner downloads only the safetensors checkpoint and tokenizer/config
+  files. Cloning the entire model repository would download duplicate
+  TensorFlow, PyTorch, Flax, and Rust weight formats totaling roughly 32 GB.
+- The original OpenAI GitHub implementation remains available as historical
+  source, but it expects TensorFlow 1.12 and Python 3.6-era dependencies. A
+  current runtime is considerably easier to reproduce on Ubuntu 24.04.
+- The original model/repository uses OpenAI's **Modified MIT License**, which
+  adds responsible-use and clear-labeling requests to MIT-like permission and
+  warranty terms. The code in this local runner is separate from the model.
+
+## Useful controls
+
+```text
+--temperature 0       deterministic greedy continuation
+--temperature 0.8     sampled continuation (default)
+--top-k 50            keep the 50 likeliest next tokens
+--top-p 0.95          nucleus-sampling threshold
+--max-new-tokens 80   maximum continuation length
+--seed 42             repeatable sampling
+--threads N           override PyTorch's CPU thread count
+--offline             forbid downloads and use the local cache only
+```
+
+On this laptop, PyTorch's default of 14 threads performed much better than 28
+threads. The processor's 28 logical CPUs are not a recommended thread setting;
+if tuning, benchmark values in roughly the 4–20 range. Also expect the first
+request after loading to be slower because it pages in mapped weights and
+initializes kernels.
+
+GPT-2 reflects biases and factual errors in its training data. Treat its text
+as generated material, not as a reliable factual source.
+
+## Primary references
+
+- [OpenAI's November 2019 GPT-2 1.5B release](https://openai.com/index/gpt-2-1-5b-release/)
+- [Pinned GPT-2 XL checkpoint](https://huggingface.co/openai-community/gpt2-xl/tree/15ea56dee5df4983c59b2538573817e1667135e2)
+- [Pinned safetensors file metadata](https://huggingface.co/openai-community/gpt2-xl/blob/15ea56dee5df4983c59b2538573817e1667135e2/model.safetensors)
+- [Original OpenAI GPT-2 repository](https://github.com/openai/gpt-2)
+- [OpenAI's Modified MIT License](https://github.com/openai/gpt-2/blob/master/LICENSE)
+- [Transformers GPT-2 documentation](https://huggingface.co/docs/transformers/model_doc/gpt2)
+- [Microsoft's WSL filesystem guidance](https://learn.microsoft.com/windows/wsl/filesystems)
