@@ -230,3 +230,62 @@ The installed `gpt2-experiment` entry point produced the same ten-case dry-run
 plan. `gpt2-xl --info` remained backward compatible by retaining the historical
 `checkpoint_sha256` key, while also exposing the more precise
 `expected_checkpoint_sha256` name and `info_schema_version: 1`.
+
+## First browser-chat increment
+
+Implemented and checked in the isolated `codex/gpt2-chat` worktree based on
+`b48ff08`. The original checkout remained clean on `main`. A fresh import from
+the shared WSL virtual environment, without the chat's `PYTHONPATH`, still
+resolved `gpt2_local` to the original checkout. No environment reinstallation
+or model/cache duplication was performed.
+
+`gpt2-xl --info` reproduced Python 3.12.3, PyTorch 2.14.1+cpu, Transformers
+5.18.0, Tokenizers 0.23.2, 14 CPU threads, and the pinned model revision.
+The cached model configuration independently specifies EOS token 50256.
+The smoke tests loaded the original CPU FP32 checkpoint offline and reported
+1,557,611,200 parameters. This work did not repeat the full-file checkpoint
+hash verification; the earlier download-time verification remains that evidence.
+
+The project owner approved the chat header and generic demonstration rounds
+before model-generation tests. The prompt header states October 1, 2026;
+the exact header and examples are defined in `src/gpt2_local/chat.py`.
+Initial text context counts for 0, 1, and 2 example rounds were 124, 176, and
+208 GPT-2 tokens respectively.
+
+The server was launched with `./chat.ps1 -Offline`. These browser-driven
+smoke requests used temperature 0.8, seed 42, a 32-token reply cap, top-k 50,
+top-p 0.95, and repetition penalty 1.0 in one resident process:
+
+| Order | Examples | Human message | Input tokens | Generated tokens | Stop reason | Time |
+| ---: | ---: | --- | ---: | ---: | --- | ---: |
+| 1 | 2 | `Hello.` followed by a newline and `Can you tell me what you are?` | 230 | 24 | message delimiter | 14.4 s |
+| 2 | 0 | `Hello, who are you?` | 141 | 8 | message delimiter | 2.5 s |
+| 3 | 1 | `Hello, who are you?` | 193 | 32 | reply token limit | 6.8 s |
+
+The first request included cold page-in/kernel setup; subsequent requests
+were warm. Generated-token counts include the sampled delimiter tokens, while
+the visible context excludes them. The early-stop checks exercised the actual
+Transformers stopping criterion. These three short requests verify application
+plumbing and are not a controlled comparison of example counts or reply quality.
+Their raw generated replies were not committed.
+
+Browser checks also verified that Shift+Enter adds a newline without sending,
+Enter sends, the exact packed input is visible during inference, the last
+input prompt can be inspected, all example-count options change the visible
+context, and reload restores the live conversation. A 1,023-token reply request
+left only one input token available; the resulting error preserved both the
+existing conversation and the editable human draft without invoking the model.
+
+The complete model-free suite passed **52 tests** in the WSL environment with
+the worktree's source explicitly selected. This includes the original tests
+plus continuation-only stopping across token fragments, earliest-delimiter
+trimming, EOS compatibility, full-context packing, exact reserve boundaries,
+whole-round eviction, failure rollback, previews without history mutation,
+0/1/2 examples, full-range seed strings, session replacement, HTTP validation,
+and busy-request handling. The final measured run took 2.092 seconds.
+Python compilation, JavaScript syntax checking, PowerShell syntax parsing,
+mocked launcher argument forwarding with spaced paths, and `git diff --check`
+also passed. The HTTP tests use a fake resident runner and do not numerically
+validate the checkpoint.
+A local wheel build also verified that `gpt2_local/web/chat.html` is included;
+the wheel was not installed into the shared environment.

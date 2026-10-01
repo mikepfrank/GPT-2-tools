@@ -19,6 +19,10 @@ dependencies = [
 [project.scripts]
 gpt2-xl = "gpt2_local.cli:main"
 gpt2-experiment = "gpt2_local.experiment:main"
+gpt2-chat = "gpt2_local.chat:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+gpt2_local = ["web/*.html"]

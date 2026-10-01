@@ -12,6 +12,12 @@ The project is a working, CPU-first local deployment of OpenAI's original
 GPT-2 XL learned checkpoint. The baseline runner and the first reproducible
 temperature-sweep application are complete and verified.
 
+The first browser-chat increment is developed separately on `codex/gpt2-chat`,
+starting from `b48ff08`. Its local worktree is `.worktrees/gpt2-chat`; the
+original `main` checkout and shared editable WSL installation remain intact.
+This increment is ready for the project owner's hands-on test before adding
+streaming, participant renaming, or in-context commands.
+
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
 - Installation and user-facing commands: [`README.md`](README.md)
@@ -27,6 +33,8 @@ user instructions in `README.md` and exact reproduced measurements in
 - The setup downloads and verifies the full 1.5B-class GPT-2 XL checkpoint;
   the runner then loads it and generates text offline under Ubuntu in WSL 2.
 - A PowerShell launcher supports one-shot generation and an interactive REPL.
+- A localhost browser chat supports a resident model, the complete visible
+  context, Enter/Shift+Enter input, and selectable 0/1/2 example rounds.
 - A config-driven experiment application keeps the model resident while it
   sweeps temperatures and seeds, then saves canonical JSON and Markdown.
 - The same application has a serendipity mode that selects distinct random
@@ -122,6 +130,14 @@ The dated disk-usage measurements are recorded in `VERIFICATION.md`.
   PowerShell into the WSL Python runner.
 - [`experiment.ps1`](experiment.ps1) launches a batch experiment through WSL
   while safely translating config and output paths.
+- [`chat.ps1`](chat.ps1) launches the browser chat with this checkout's `src`
+  explicitly selected through `PYTHONPATH`, avoiding reinstallation into the
+  shared WSL environment when working in a separate worktree.
+- [`src/gpt2_local/chat.py`](src/gpt2_local/chat.py) owns the approved chat
+  header/examples, whole-round context packing, in-memory sessions, exact
+  input previews, and a loopback-only standard-library HTTP server.
+- [`src/gpt2_local/web/chat.html`](src/gpt2_local/web/chat.html) implements the
+  browser interface without frontend dependencies.
 - [`experiments/identity-context.json`](experiments/identity-context.json)
   defines the first fixed-prompt, ten-sample temperature sweep.
 - [`src/gpt2_local/cli.py`](src/gpt2_local/cli.py) implements download, info,
@@ -217,6 +233,33 @@ current `report.md` files—the two fixed sweeps, the serendipity run, and its
 same-seed replay—as tracked exceptions. This does not change the default ignore
 policy for raw JSON, replay configs, or future generated artifacts.
 
+## Operating the browser chat
+
+Run `./chat.ps1 -Offline` from the development checkout and open
+`http://localhost:8765/` after the ready message. The model remains resident;
+Ctrl+C stops the server. The browser supplies its local date when starting a
+chat. The project owner reviewed and approved the concise identity/history
+header and two generic demonstration rounds before generation tests.
+
+The header is preserved while the oldest complete human/model rounds leave
+the 1,024-token window, including the examples first. A 120-token reply
+allowance is the default; oversized current messages are rejected without
+changing history. `/api/preview` shows the exact next input before inference,
+and the main scrolling widget then shows the retained input plus visible reply.
+
+The runtime's optional `stop_sequences` support matches decoded continuation
+text across token boundaries, stops at `\n\nHuman>` or `\n\nGPT-2>`, and
+excludes the boundary from the reply. Native `<|endoftext|>` (50256) also stops
+generation; ordinary blank lines do not. Raw generated-token metadata still
+includes sampled stopping tokens. Default text-completion/experiment behavior
+is unchanged when no stop sequences are supplied.
+
+The server uses in-memory sessions and serializes inference because the model
+and Torch RNG are shared. Reloading the browser restores a live session; New
+chat releases its previous session. There is no chat saving, streaming, or
+participant-name command support yet. Generated smoke-test replies were not
+added to the public repository.
+
 ## Performance notes
 
 - Safetensors maps the model quickly, but the first generation also pays for
@@ -278,9 +321,15 @@ The following have been reproduced locally:
 - the ten-case experiment dry run and two full offline executions;
 - the ten-sample temperature-0.8 serendipity run, recorded unique seeds, saved
   replay plan, and exact token-ID equality across a full same-machine replay;
-- nineteen model-free automated tests covering experiment planning,
+- the original nineteen model-free automated tests covering experiment planning,
   serendipity selection and CLI parsing, seed replay, structured results,
   warm-up, overflow rejection, failure, and persistence paths.
+- the expanded 52-test model-free suite, including decoded delimiter stopping,
+  whole-round rolling context, exact input previews, transactional errors,
+  63-bit seed handling, and localhost HTTP requests;
+- live offline browser chats with 0, 1, and 2 example rounds, early delimiter
+  stopping and reply-limit stopping, multiline keyboard input, overlong-input
+  preservation, and browser reload recovery.
 
 Preserve the distinction between reproduced verification and untested
 expectations. The tests deliberately do not load or numerically validate the
@@ -289,7 +338,7 @@ expectations. The tests deliberately do not load or numerically validate the
 ## Known limitations and caution points
 
 - GPT-2 is a base text completer, not an instruction-following assistant.
-- Interactive prompts have no automatic history.
+- The original completion REPL has no automatic history; browser chat does.
 - `--include-prompt` affects one-shot generation; interactive mode currently
   prints only the continuation.
 - The PowerShell launchers assume the distro is named `Ubuntu` and the venv is
@@ -333,8 +382,8 @@ Good candidates, roughly in priority order:
    repetition/coherence diagnostics across more than one prompt.
 3. Expose top-k, top-p, repetition penalty, and CPU threads through `run.ps1`,
    or add interactive commands for inspecting/changing settings.
-4. Build a small browser playground that keeps the model resident and exposes
-   generation controls. Streaming output would improve perceived latency.
+4. Have the project owner test the first browser-chat increment, then consider
+   streaming output and participant-name commands as separate later increments.
 5. Run a separate controlled comparison of repetition penalties around `1.05`,
    `1.10`, and `1.20`; do not mix that variable into the temperature pilot.
 6. Benchmark an isolated OpenVINO FP32 backend against the existing baseline,

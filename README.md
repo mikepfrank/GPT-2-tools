@@ -63,6 +63,58 @@ gpt2-xl "Reversible computing is" --max-new-tokens 60 --seed 42
 gpt2-xl                         # interactive mode
 ```
 
+## Chat in a local browser
+
+Start the chat server from PowerShell in this checkout:
+
+```powershell
+./chat.ps1 -Offline
+```
+
+After the terminal prints **GPT-2 chat ready**, open
+<http://localhost:8765/> in a browser. Keep that terminal open; Ctrl+C stops
+the server. Use `-Port 8899` if another application uses the default port.
+The first reply can take longer while the checkpoint pages into memory.
+
+The main scrolling view shows the complete current text context: the identity
+and date header, retained examples, retained conversation, and latest reply.
+Enter sends a message; Shift+Enter inserts a newline. Choose 0, 1, or 2 example
+rounds and click **New chat** to begin with that many generic demonstrations.
+Examples are authored prompt material, not measured model outputs. The date
+comes from the browser's local calendar when starting the chat.
+
+Temperature, optional seed, and maximum reply length apply to each next
+message. The default reply allowance is 120 tokens, leaving up to 904 input
+tokens within GPT-2's 1,024-token window. The fixed header is preserved while
+the oldest complete conversation rounds roll out, starting with the examples.
+The page shows how many rounds have rolled out and lets you inspect the exact
+input prompt for the last reply. If a message cannot fit beside the header and
+reply allowance, shorten it or reduce the reply length; the app preserves your
+unsent input and existing history.
+
+GPT-2's native end-of-text token, `<|endoftext|>` (50256), ends generation.
+The chat also stops at the first exact `\n\nHuman>` or `\n\nGPT-2>` boundary,
+removing that delimiter from the displayed reply and future context. Ordinary
+blank lines remain allowed inside messages. These two boundary sequences and
+the literal special-token spelling are reserved in human input.
+The generated-token count includes any sampled stopping tokens; the visible
+context excludes them.
+
+The server binds only to the local loopback interface, uses one resident CPU
+FP32 model, and returns completed replies. Chat history lives only in server
+memory and is lost when the server stops. A browser reload restores the current
+chat while its server remains running. Participant renaming, `/set` commands,
+streaming, and saved chat transcripts are left for later increments.
+
+The launcher uses this checkout's source directly through `PYTHONPATH`, without
+changing the shared WSL environment's editable installation. This matters when
+trying a development worktree alongside the original completion tools. There
+are no new application dependencies. Inside WSL the equivalent invocation is:
+
+```bash
+PYTHONPATH="$PWD/src" ~/.venvs/gpt2-xl/bin/python -m gpt2_local.chat --offline
+```
+
 ## Run the temperature experiment
 
 The repository includes a reproducible experiment built around the supplied

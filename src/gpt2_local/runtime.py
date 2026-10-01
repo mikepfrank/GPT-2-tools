@@ -52,7 +52,7 @@ class GenerationSettings:
 
 @dataclass(frozen=True)
 class GenerationResult:
-    """A continuation plus the measurements needed to reproduce a run."""
+    """A continuation plus measurements of all sampled tokens, including stops."""
 
     text: str
     original_input_tokens: int
@@ -203,11 +203,21 @@ class Gpt2Runner:
         settings: GenerationSettings,
         *,
         include_prompt: bool = False,
+        stop_sequences: tuple[str, ...] = (),
     ) -> GenerationResult:
-        """Generate text and return structured timing and token-count metadata."""
+        """Generate text, optionally stopping before a decoded continuation marker.
+
+        Stop matching excludes the prompt. Token IDs and counts still describe
+        every sampled token, including tokens that completed a stop sequence.
+        """
         settings.validate()
         if not prompt:
             raise ValueError("prompt cannot be empty")
+        if isinstance(stop_sequences, str) or any(
+            not isinstance(sequence, str) or not sequence
+            for sequence in stop_sequences
+        ):
+            raise ValueError("stop_sequences must contain non-empty strings")
 
         torch = self._torch
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
@@ -244,6 +254,36 @@ class Gpt2Runner:
                 top_p=settings.top_p,
             )
 
+        if stop_sequences:
+            from transformers import StoppingCriteria, StoppingCriteriaList
+
+            tokenizer = self.tokenizer
+
+            class ContinuationStops(StoppingCriteria):
+                def __call__(self, input_ids, scores, **kwargs):
+                    # GPT-2 BPE can split delimiters differently depending on
+                    # preceding text. Match decoded generated text, not a fixed
+                    # token suffix, and never scan the supplied prompt.
+                    continuations = [
+                        tokenizer.decode(
+                            row[input_length:],
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False,
+                        )
+                        for row in input_ids
+                    ]
+                    matches = [
+                        any(sequence in text for sequence in stop_sequences)
+                        for text in continuations
+                    ]
+                    return torch.tensor(
+                        matches, dtype=torch.bool, device=input_ids.device
+                    )
+
+            generation_arguments["stopping_criteria"] = StoppingCriteriaList(
+                [ContinuationStops()]
+            )
+
         started = time.perf_counter()
         with torch.inference_mode():
             output = self.model.generate(**inputs, **generation_arguments)
@@ -270,14 +310,37 @@ class Gpt2Runner:
             generated_token_ids
             and generated_token_ids[-1] == self.tokenizer.eos_token_id
         )
-        selected = output[0] if include_prompt else generated
+        stop_reason = "eos_token" if stopped_on_eos else "max_new_tokens"
+        if stop_sequences:
+            text = self.tokenizer.decode(
+                generated,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            stop_indices = [
+                index
+                for sequence in stop_sequences
+                if (index := text.find(sequence)) >= 0
+            ]
+            if stop_indices:
+                text = text[:min(stop_indices)]
+                stop_reason = "stop_sequence"
+            if include_prompt:
+                text = self.tokenizer.decode(
+                    output[0, :input_length],
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                ) + text
+        else:
+            selected = output[0] if include_prompt else generated
+            text = self.tokenizer.decode(selected, skip_special_tokens=True)
         return GenerationResult(
-            text=self.tokenizer.decode(selected, skip_special_tokens=True),
+            text=text,
             original_input_tokens=original_input_length,
             input_tokens=input_length,
             output_tokens=generated_tokens,
             output_token_ids=generated_token_ids,
-            stop_reason="eos_token" if stopped_on_eos else "max_new_tokens",
+            stop_reason=stop_reason,
             elapsed_seconds=elapsed,
             tokens_per_second=rate,
             prompt_truncated=prompt_truncated,

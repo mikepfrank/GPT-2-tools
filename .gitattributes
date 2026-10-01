@@ -6,6 +6,7 @@
 *.toml text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
+*.html text eol=lf
 
 # PowerShell entry points are intended for Windows.
 *.ps1 text eol=crlf

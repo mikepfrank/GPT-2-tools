@@ -1,0 +1,351 @@
+"""A small local browser chat using the historical GPT-2 XL checkpoint."""
+from __future__ import annotations
+
+import argparse
+import json
+import secrets
+import sys
+import threading
+from dataclasses import dataclass, field
+from datetime import date
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Callable
+from urllib.parse import parse_qs, urlsplit
+
+from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner
+
+HUMAN_MARKER = "\n\nHuman>"
+MODEL_MARKER = "\n\nGPT-2>"
+STOP_SEQUENCES = (HUMAN_MARKER, MODEL_MARKER)
+EXAMPLES = (
+    (
+        "Hello, who are you?",
+        " I'm GPT-2, a language model. I generate text from the words you give me. "
+        "This conversation is a little unfamiliar, but I can try to reply.",
+    ),
+    (
+        "What would you like to talk about?",
+        " Perhaps books, science, or everyday life. What interests you?",
+    ),
+)
+
+
+def prompt_header(chat_date: date) -> str:
+    date_text = f"{chat_date.strftime('%B')} {chat_date.day}, {chat_date.year}"
+    return (
+        "Context: This is a local chat experiment with GPT-2 XL, OpenAI's original "
+        "1.56-billion-parameter language model released in 2019. "
+        f"Today's date is {date_text}. "
+        "Since 2019, language models have become more capable at conversation, "
+        "coding, and reasoning; newer systems can also use tools and process images "
+        "and audio. This GPT-2 checkpoint retains its original training.\n\n"
+        "Messages begin with Human> or GPT-2>, preceded by a blank line. "
+        "Continue the latest GPT-2 message with a short conversational reply. "
+        "Stop before beginning another message."
+    )
+
+
+@dataclass(frozen=True)
+class Round:
+    human: str
+    assistant: str
+    example: bool = False
+
+    def text(self) -> str:
+        # Assistant text is the exact continuation, including its leading space.
+        return HUMAN_MARKER + " " + self.human + MODEL_MARKER + self.assistant
+
+    def record(self) -> dict[str, object]:
+        return {"human": self.human, "assistant": self.assistant, "example": self.example}
+
+
+@dataclass(frozen=True)
+class PreparedInput:
+    message: str
+    prompt: str
+    input_tokens: int
+    retained_rounds: list[Round]
+
+
+def _trim_reply(text: str) -> str:
+    positions = [position for marker in STOP_SEQUENCES if (position := text.find(marker)) >= 0]
+    return text[: min(positions)] if positions else text
+
+
+def parse_settings(raw: object) -> GenerationSettings:
+    if not isinstance(raw, dict):
+        raise ValueError("settings must be an object")
+    if set(raw) - {"max_new_tokens", "temperature", "seed"}:
+        raise ValueError("Unknown generation setting")
+    maximum = raw.get("max_new_tokens", 120)
+    temperature = raw.get("temperature", 0.8)
+    seed = raw.get("seed")
+    if isinstance(maximum, bool) or not isinstance(maximum, int):
+        raise ValueError("Reply length must be an integer")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise ValueError("Temperature must be a number")
+    try:
+        temperature = float(temperature)
+    except OverflowError as exc:
+        raise ValueError("Temperature must be finite") from exc
+    if seed is not None:
+        if not isinstance(seed, str) or not seed.isascii() or not seed.isdecimal():
+            raise ValueError("Seed must be a decimal integer, or left blank")
+        seed = int(seed)
+    settings = GenerationSettings(max_new_tokens=maximum, temperature=temperature, seed=seed)
+    settings.validate()
+    return settings
+
+
+@dataclass
+class ChatSession:
+    session_id: str
+    header: str
+    example_rounds: int
+    rounds: list[Round] = field(default_factory=list)
+    transcript: list[Round] = field(default_factory=list)
+    dropped_rounds: int = 0
+    last_generation: dict[str, object] | None = None
+
+    def context_text(self) -> str:
+        return self.header + "".join(item.text() for item in self.rounds)
+
+    def state(self, count_tokens: Callable[[str], int]) -> dict[str, object]:
+        context = self.context_text()
+        return {
+            "session_id": self.session_id,
+            "context_text": context,
+            "context_tokens": count_tokens(context),
+            "example_rounds": self.example_rounds,
+            "retained_example_rounds": sum(item.example for item in self.rounds),
+            "dropped_rounds": self.dropped_rounds,
+            "turns": [item.record() for item in self.transcript],
+            "last_generation": self.last_generation,
+        }
+
+    def prepare(
+        self, message: object, settings: GenerationSettings,
+        count_tokens: Callable[[str], int],
+    ) -> PreparedInput:
+        if not isinstance(message, str):
+            raise ValueError("Message must be text")
+        message = message.replace("\r\n", "\n").replace("\r", "\n")
+        if not message.strip():
+            raise ValueError("Enter a message before sending")
+        if any(marker in message for marker in STOP_SEQUENCES):
+            raise ValueError("A blank line followed by Human> or GPT-2> is reserved for message boundaries")
+        if "<|endoftext|>" in message:
+            raise ValueError("<|endoftext|> is reserved by the GPT-2 tokenizer")
+        settings.validate()
+        retained = list(self.rounds)
+        budget = MODEL_CONTEXT_TOKENS - settings.max_new_tokens
+        suffix = HUMAN_MARKER + " " + message + MODEL_MARKER
+        while True:
+            prompt = self.header + "".join(item.text() for item in retained) + suffix
+            prompt_tokens = count_tokens(prompt)
+            if prompt_tokens <= budget:
+                break
+            if not retained:
+                raise ValueError(
+                    f"This message needs {prompt_tokens} input tokens including the header; "
+                    f"only {budget} fit with a {settings.max_new_tokens}-token reply allowance. "
+                    "Shorten the message or reduce the reply length."
+                )
+            retained.pop(0)
+        return PreparedInput(message, prompt, prompt_tokens, retained)
+
+    def preview(self, message: object, settings: GenerationSettings, count_tokens: Callable[[str], int]) -> dict[str, object]:
+        prepared = self.prepare(message, settings, count_tokens)
+        state = self.state(count_tokens)
+        state.update(
+            context_text=prepared.prompt,
+            context_tokens=prepared.input_tokens,
+            retained_example_rounds=sum(item.example for item in prepared.retained_rounds),
+            dropped_rounds=self.dropped_rounds + len(self.rounds) - len(prepared.retained_rounds),
+        )
+        return state
+
+    def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
+        prepared = self.prepare(message, settings, runner.count_prompt_tokens)
+        result = runner.generate_result(prepared.prompt, settings, stop_sequences=STOP_SEQUENCES)
+        if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
+            raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
+        reply_text = _trim_reply(result.text)
+        new_round = Round(human=prepared.message, assistant=reply_text)
+        # Commit history only after successful inference and validation.
+        self.dropped_rounds += len(self.rounds) - len(prepared.retained_rounds)
+        self.rounds = prepared.retained_rounds + [new_round]
+        self.transcript.append(new_round)
+        self.last_generation = {
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "stop_reason": "stop_sequence" if reply_text != result.text else result.stop_reason,
+            "elapsed_seconds": result.elapsed_seconds,
+            "seed": str(settings.seed) if settings.seed is not None else None,
+            "temperature": settings.temperature,
+            "max_new_tokens": settings.max_new_tokens,
+            "prompt_text": prepared.prompt,
+        }
+
+
+class ChatApplication:
+    def __init__(self, runner: Gpt2Runner) -> None:
+        self.runner = runner
+        self.sessions: dict[str, ChatSession] = {}
+        # Torch's RNG and the model are shared; serialize inference and state updates.
+        self.lock = threading.Lock()
+
+    def new_session(self, example_rounds: object, date_text: object, previous_session_id: object = None) -> ChatSession:
+        if isinstance(example_rounds, bool) or not isinstance(example_rounds, int) or example_rounds not in (0, 1, 2):
+            raise ValueError("Choose 0, 1, or 2 example rounds")
+        if not isinstance(date_text, str):
+            raise ValueError("Date must use YYYY-MM-DD")
+        try:
+            chat_date = date.fromisoformat(date_text)
+        except ValueError as exc:
+            raise ValueError("Date must use YYYY-MM-DD") from exc
+        if chat_date.isoformat() != date_text:
+            raise ValueError("Date must use YYYY-MM-DD")
+        if previous_session_id is not None and not isinstance(previous_session_id, str):
+            raise ValueError("Previous session identifier must be text")
+        examples = [Round(human, assistant, example=True) for human, assistant in EXAMPLES[:example_rounds]]
+        session = ChatSession(secrets.token_urlsafe(24), prompt_header(chat_date), example_rounds, list(examples), list(examples))
+        self.sessions[session.session_id] = session
+        if previous_session_id is not None:
+            self.sessions.pop(previous_session_id, None)
+        return session
+
+    def session(self, session_id: object) -> ChatSession:
+        if not isinstance(session_id, str) or session_id not in self.sessions:
+            raise KeyError("Chat session expired or was not found; start a new chat")
+        return self.sessions[session_id]
+
+
+class ChatServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], application: ChatApplication) -> None:
+        self.application = application
+        super().__init__(address, ChatHandler)
+
+
+class ChatHandler(BaseHTTPRequestHandler):
+    server: ChatServer
+
+    def log_message(self, format: str, *args: object) -> None:
+        # Requests contain no chat text in paths; do not log session identifiers.
+        pass
+
+    def _send(self, status: int, content: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _json(self, status: int, value: object) -> None:
+        self._send(status, json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _local_request(self) -> bool:
+        port = self.server.server_port
+        allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin")
+        if host not in allowed_hosts or (origin is not None and origin != f"http://{host}"):
+            self._json(403, {"error": "Use the local chat page to access this server"})
+            return False
+        return True
+
+    def do_GET(self) -> None:
+        if not self._local_request():
+            return
+        parsed = urlsplit(self.path)
+        if parsed.path == "/":
+            page = Path(__file__).with_name("web").joinpath("chat.html").read_bytes()
+            self._send(200, page, "text/html; charset=utf-8")
+        elif parsed.path == "/api/state":
+            with self.server.application.lock:
+                try:
+                    session_id = parse_qs(parsed.query).get("session_id", [None])[0]
+                    session = self.server.application.session(session_id)
+                    self._json(200, session.state(self.server.application.runner.count_prompt_tokens))
+                except KeyError as exc:
+                    self._json(404, {"error": exc.args[0]})
+        else:
+            self._json(404, {"error": "Not found"})
+
+    def do_POST(self) -> None:
+        if not self._local_request():
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._json(415, {"error": "Send application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 65536:
+                raise ValueError("Request body must be between 1 and 65536 bytes")
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("Request must be a JSON object")
+        except (ValueError, UnicodeError) as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        app = self.server.application
+        if not app.lock.acquire(blocking=False):
+            self._json(409, {"error": "The model is busy; try again after the current reply"})
+            return
+        try:
+            if self.path == "/api/new":
+                session = app.new_session(body.get("example_rounds", 2), body.get("date"), body.get("previous_session_id"))
+            elif self.path == "/api/message":
+                session = app.session(body.get("session_id"))
+                settings = parse_settings(body.get("settings", {}))
+                session.reply(body.get("message"), settings, app.runner)
+            elif self.path == "/api/preview":
+                session = app.session(body.get("session_id"))
+                settings = parse_settings(body.get("settings", {}))
+                self._json(200, session.preview(body.get("message"), settings, app.runner.count_prompt_tokens))
+                return
+            else:
+                self._json(404, {"error": "Not found"})
+                return
+            self._json(200, session.state(app.runner.count_prompt_tokens))
+        except KeyError as exc:
+            self._json(404, {"error": exc.args[0]})
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+        except Exception as exc:
+            print(f"Chat inference failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            self._json(500, {"error": "Generation failed; your message and chat history were preserved. Check the server terminal."})
+        finally:
+            app.lock.release()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--threads", type=int)
+    arguments = parser.parse_args(argv)
+    if not 1 <= arguments.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    if arguments.threads is not None and arguments.threads < 1:
+        parser.error("threads must be at least 1")
+    # Bind before mapping the large checkpoint, so port conflicts fail quickly.
+    server = ChatServer(("127.0.0.1", arguments.port), ChatApplication(None))  # type: ignore[arg-type]
+    try:
+        server.application.runner = Gpt2Runner(offline=arguments.offline, threads=arguments.threads)
+        print(f"GPT-2 chat ready: http://localhost:{server.server_port}/\nPress Ctrl+C to stop.", flush=True)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nChat stopped.", flush=True)
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -142,5 +142,174 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         self.assertEqual(first.text, replay.text)
 
 
+class RuntimeStopSequenceTests(unittest.TestCase):
+    @staticmethod
+    def _runner(
+        fragments: tuple[str, ...],
+        *,
+        honor_stops: bool = True,
+        include_eos: bool = False,
+    ) -> Gpt2Runner:
+        """Exercise real criteria with tiny fake token fragments; load no model."""
+        import torch
+
+        class FragmentTokenizer:
+            eos_token_id = 99
+            prompt = ""
+
+            def __call__(self, prompt: str, **_: object) -> dict[str, torch.Tensor]:
+                self.prompt = prompt
+                return {
+                    "input_ids": torch.tensor([[1]]),
+                    "attention_mask": torch.ones((1, 1), dtype=torch.long),
+                }
+
+            def decode(self, tokens: torch.Tensor, **_: object) -> str:
+                pieces = {1: self.prompt, self.eos_token_id: ""}
+                pieces.update({10 + index: text for index, text in enumerate(fragments)})
+                return "".join(pieces[token_id] for token_id in tokens.tolist())
+
+        class FragmentModel:
+            seen_criteria = None
+            checks: list[bool]
+
+            def __init__(self) -> None:
+                self.checks = []
+
+            def generate(
+                self,
+                input_ids: torch.Tensor,
+                *,
+                stopping_criteria=None,
+                **_: object,
+            ) -> torch.Tensor:
+                self.seen_criteria = stopping_criteria
+                output = input_ids
+                for index in range(len(fragments)):
+                    output = torch.cat((output, torch.tensor([[10 + index]])), dim=1)
+                    if stopping_criteria is not None:
+                        done = bool(stopping_criteria(output, None)[0].item())
+                        self.checks.append(done)
+                        if done and honor_stops:
+                            return output
+                if include_eos:
+                    output = torch.cat((output, torch.tensor([[99]])), dim=1)
+                return output
+
+        runner = object.__new__(Gpt2Runner)
+        runner._torch = torch
+        runner.tokenizer = FragmentTokenizer()
+        runner.model = FragmentModel()
+        runner._generation_count = 0
+        return runner
+
+    def test_stops_only_after_complete_delimiter_across_fragments(self) -> None:
+        runner = self._runner(("Hello", "\n", "\nHu", "man", ">", "simulated human"))
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+        )
+
+        self.assertEqual(result.text, "Hello")
+        self.assertEqual(result.stop_reason, "stop_sequence")
+        self.assertEqual(result.output_tokens, 5)
+        self.assertEqual(result.output_token_ids, (10, 11, 12, 13, 14))
+        self.assertEqual(runner.model.checks, [False, False, False, False, True])
+
+    def test_delimiter_at_start_produces_empty_reply(self) -> None:
+        runner = self._runner(("\n\nGPT-2>", "simulated assistant"))
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+        )
+
+        self.assertEqual(result.text, "")
+        self.assertEqual(result.stop_reason, "stop_sequence")
+        self.assertEqual(result.output_token_ids, (10,))
+
+    def test_eos_reason_is_preserved_with_configured_stops(self) -> None:
+        runner = self._runner(("Answer",), include_eos=True)
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+        )
+
+        self.assertEqual(result.text, "Answer")
+        self.assertEqual(result.stop_reason, "eos_token")
+        self.assertEqual(result.output_token_ids, (10, 99))
+        self.assertEqual(result.output_tokens, 2)
+
+    def test_ordinary_newlines_and_partial_or_inline_markers_do_not_stop(self) -> None:
+        fragments = ("Human> is a label.", "\n", "Second line.", "\n\nHuman", "like prose")
+        runner = self._runner(fragments)
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+        )
+
+        self.assertEqual(result.text, "".join(fragments))
+        self.assertEqual(result.stop_reason, "max_new_tokens")
+        self.assertFalse(any(runner.model.checks))
+
+    def test_prompt_delimiters_and_prompt_boundary_are_excluded(self) -> None:
+        for prompt, continuation in (
+            ("Header\n\nHuman> question\n\nGPT-2>", "Answer"),
+            ("Header\n\nHu", "man>"),
+        ):
+            with self.subTest(prompt=prompt):
+                runner = self._runner((continuation,))
+                result = runner.generate_result(
+                    prompt,
+                    GenerationSettings(max_new_tokens=10, temperature=0),
+                    include_prompt=True,
+                    stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+                )
+
+                self.assertEqual(result.text, prompt + continuation)
+                self.assertEqual(result.stop_reason, "max_new_tokens")
+                self.assertEqual(runner.model.checks, [False])
+
+    def test_defensive_trim_uses_first_sequence_even_if_generation_ignores_stop(self) -> None:
+        fragments = ("Answer\n\nGPT-2> simulated", "\n\nHuman> second")
+        runner = self._runner(fragments, honor_stops=False)
+        result = runner.generate_result(
+            "Header\n\nHuman> question\n\nGPT-2>",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            include_prompt=True,
+            stop_sequences=("\n\nHuman>", "\n\nGPT-2>"),
+        )
+
+        self.assertEqual(result.text, "Header\n\nHuman> question\n\nGPT-2>Answer")
+        self.assertEqual(result.stop_reason, "stop_sequence")
+        self.assertEqual(result.output_token_ids, (10, 11))
+        self.assertEqual(result.output_tokens, 2)
+
+    def test_no_stops_preserves_existing_output_and_omits_criteria(self) -> None:
+        runner = self._runner(("Answer\n\nHuman>", " simulated"))
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+        )
+
+        self.assertEqual(result.text, "Answer\n\nHuman> simulated")
+        self.assertEqual(result.stop_reason, "max_new_tokens")
+        self.assertIsNone(runner.model.seen_criteria)
+
+    def test_empty_or_non_text_stop_sequences_fail_before_generation(self) -> None:
+        runner = object.__new__(Gpt2Runner)
+        for sequences in (("",), ("\n\nHuman>", ""), (None,), "Human>"):
+            with self.subTest(sequences=sequences):
+                with self.assertRaisesRegex(ValueError, "non-empty strings"):
+                    runner.generate_result(
+                        "prompt",
+                        GenerationSettings(max_new_tokens=10, temperature=0),
+                        stop_sequences=sequences,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
