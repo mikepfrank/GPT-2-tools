@@ -117,11 +117,15 @@ shows every selected seed beside its sample. Replay the same plan with:
 ```
 
 The output directory is intentionally ignored by Git; generated text can be
-false, biased, offensive, or memorized. The reviewed
-[original](outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
-and [replay](outputs/experiments/20261001T201305Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
-reports are tracked as an explicit reproducibility record; other generated
-runs remain local unless deliberately reviewed and added.
+false, biased, offensive, or memorized. All four reports produced during the
+verified experiment work are reviewed and tracked as explicit records:
+
+- [first fixed sweep](outputs/experiments/20261001T013927Z-gpt-2-identity-context-temperature-sweep/report.md);
+- [repeated fixed sweep](outputs/experiments/20261001T014731Z-gpt-2-identity-context-temperature-sweep/report.md);
+- [serendipity run](outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md);
+- [same-seed replay](outputs/experiments/20261001T201305Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md).
+
+Other generated artifacts remain local unless deliberately reviewed and added.
 
 Edit or copy [`experiments/identity-context.json`](experiments/identity-context.json)
 to define another fixed-prompt temperature/seed matrix. Temperature 0 is run

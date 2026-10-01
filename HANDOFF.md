@@ -212,10 +212,10 @@ All three are atomically replaced after every sample and retain `failed` or
 `interrupted` partial results. Replay with `-Config <run>/replay-config.json`.
 Generated runs remain under ignored `outputs/experiments/`. Do not commit raw
 continuations to this public repository without reviewing them and receiving
-the project owner's approval. The project owner explicitly approved the
-reviewed `20261001T194750Z-.../report.md` original and
-`20261001T201305Z-.../report.md` replay reports as tracked exceptions; this
-does not change the default ignore policy for other generated artifacts.
+the project owner's approval. The project owner explicitly approved all four
+current `report.md` files—the two fixed sweeps, the serendipity run, and its
+same-seed replay—as tracked exceptions. This does not change the default ignore
+policy for raw JSON, replay configs, or future generated artifacts.
 
 ## Performance notes
 

@@ -198,7 +198,8 @@ operational fields such as timestamps and generation timings differed.
 
 This demonstrates exact replay on this same pinned CPU environment. It should
 not be generalized to different PyTorch builds, dependency versions, hardware,
-or thread settings without repeating the comparison there. The reviewed
+or thread settings without repeating the comparison there. The two reviewed
+fixed-sweep reports plus the reviewed serendipity
 [original](outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
 and [replay](outputs/experiments/20261001T201305Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
 reports are tracked as explicit exceptions to the generated-output ignore
