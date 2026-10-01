@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 gpt2-xl = "gpt2_local.cli:main"
+gpt2-experiment = "gpt2_local.experiment:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

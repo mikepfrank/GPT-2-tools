@@ -63,6 +63,71 @@ gpt2-xl "Reversible computing is" --max-new-tokens 60 --seed 42
 gpt2-xl                         # interactive mode
 ```
 
+## Run the temperature experiment
+
+The repository includes a reproducible experiment built around the supplied
+GPT-2 identity-context prompt. It loads the model once, performs a one-token
+warm-up, and records ten 120-token-or-shorter completions:
+
+- greedy decoding at temperature 0;
+- temperatures 0.4, 0.8, and 1.2 at seeds 42, 314, and 2026.
+
+Inspect the complete plan without loading the model:
+
+```powershell
+./experiment.ps1 -Offline -DryRun
+```
+
+Then run it:
+
+```powershell
+./experiment.ps1 -Offline
+```
+
+For a "serendipity pump" at one selected temperature, request any number from
+1 through 100. This example creates ten independent samples at temperature
+0.8, choosing a different random seed for each sample:
+
+```powershell
+./experiment.ps1 -Offline -Serendipity 10 -Temperature 0.8
+```
+
+`-Temperature` defaults to 0.8 when `-Serendipity` is present and is rejected
+when used by itself. The seeds are selected and recorded before the model is
+loaded, so even a model-load failure leaves behind the exact planned seeds.
+Use `-DryRun` to preview a newly randomized plan without loading the model;
+the later real invocation will intentionally choose a fresh plan.
+
+Inside WSL, the equivalent entry point is:
+
+```bash
+gpt2-experiment experiments/identity-context.json --offline
+gpt2-experiment experiments/identity-context.json --offline \
+  --serendipity 10 --temperature 0.8
+```
+
+Each run creates a timestamped directory under `outputs/experiments/` with a
+canonical `results.json`, a readable `report.md`, and the exact effective
+`replay-config.json`. The files are updated atomically after each completion,
+so an interrupted run retains its completed samples. A serendipity report
+shows every selected seed beside its sample. Replay the same plan with:
+
+```powershell
+./experiment.ps1 -Offline -Config ./outputs/experiments/<run>/replay-config.json
+```
+
+The output directory is intentionally ignored by Git; generated text can be
+false, biased, offensive, or memorized. The reviewed
+[original](outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
+and [replay](outputs/experiments/20261001T201305Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
+reports are tracked as an explicit reproducibility record; other generated
+runs remain local unless deliberately reviewed and added.
+
+Edit or copy [`experiments/identity-context.json`](experiments/identity-context.json)
+to define another fixed-prompt temperature/seed matrix. Temperature 0 is run
+only once because seeds do not affect greedy decoding. The report's repetition
+metrics are descriptive diagnostics, not measures of awareness or understanding.
+
 ## What this is—and is not
 
 - The checkpoint is `openai-community/gpt2-xl`, pinned to revision
@@ -102,6 +167,18 @@ initializes kernels.
 
 GPT-2 reflects biases and factual errors in its training data. Treat its text
 as generated material, not as a reliable factual source.
+
+## Run the model-free tests
+
+From the project directory inside WSL with the project environment active:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+These tests exercise planning, validation, atomic result persistence, partial
+failure recovery, Markdown rendering, and compatibility with the original
+one-shot runner without loading the 6 GB checkpoint.
 
 ## Primary references
 

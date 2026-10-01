@@ -1,6 +1,6 @@
 # Verification record
 
-Verified locally on **2026-09-30**.
+Verified locally through **2026-10-01**.
 
 ## Host
 
@@ -77,3 +77,155 @@ includes lazy page-in and kernel setup.
 Regression checks also passed for a supplied random seed and for a prompt that
 begins with a hyphen; both travel correctly through the PowerShell-to-WSL
 launcher.
+
+## Temperature-sweep application
+
+The experiment wrapper was first validated without loading the model:
+
+```powershell
+./experiment.ps1 -Offline -DryRun
+```
+
+It expanded the tracked `experiments/identity-context.json` configuration to
+the expected ten cases: one seedless greedy completion, plus temperatures 0.4,
+0.8, and 1.2 at seeds 42, 314, and 2026. This also exercised absolute path
+translation across the PowerShell/WSL boundary for a project path containing
+spaces.
+
+Two full offline sweeps completed. The final-code run lasted from
+`2026-10-01T01:47:31Z` through `2026-10-01T01:50:08Z` (the evening of
+2026-09-30 in the host's America/Chicago time zone). The exact prompt contained
+85 GPT-2 tokens and its UTF-8 SHA-256 was
+`a1c5f5acbc9f5cd70fbe8db1a20bec0aac8da88948c2ab324aa546a7a4f8e9d7`.
+One GPT-2 XL process served every case at the default 14 CPU threads.
+
+| Temperature | Seed | Output tokens | Stop reason | Repeated 4-gram fraction |
+| ---: | ---: | ---: | --- | ---: |
+| 0.0 | greedy | 120 | max token limit | 0.794872 |
+| 0.4 | 42 | 120 | max token limit | 0.923077 |
+| 0.4 | 314 | 120 | max token limit | 0.094017 |
+| 0.4 | 2026 | 120 | max token limit | 0.837607 |
+| 0.8 | 42 | 67 | end-of-text token | 0.0 |
+| 0.8 | 314 | 89 | end-of-text token | 0.0 |
+| 0.8 | 2026 | 1 | end-of-text token | n/a |
+| 1.2 | 42 | 120 | max token limit | 0.0 |
+| 1.2 | 314 | 120 | max token limit | 0.034188 |
+| 1.2 | 2026 | 1 | end-of-text token | n/a |
+
+The one-token first-request warm-up took 0.96 seconds on the final run after
+the earlier sweep had warmed the host file cache; it took 7.31 seconds on the
+first sweep. Full 120-token samples in the final run generated at 5.71–5.87
+output tokens/second. Very short end-of-text samples are not meaningful
+throughput measurements. No prompt was truncated, and none of the ten recorded
+samples included first-request setup work.
+
+The ordered continuation hashes matched across both runs, confirming the
+expected repeatability for this prompt, matrix, and local runtime. The final
+run's ignored artifacts are under
+`outputs/experiments/20261001T014731Z-gpt-2-identity-context-temperature-sweep/`.
+`results.json` contains exact token IDs and provenance/settings; `report.md`
+contains the decoded continuations.
+
+The experiment did not re-hash the 5.99 GiB checkpoint, so its record correctly
+marks live integrity verification false and separately stores the pinned
+expected checksum. The earlier download-time full-file verification remains
+the integrity evidence.
+
+These outcomes are descriptive evidence about this one prompt and predefined
+seed matrix. They do not establish stable identity, self-awareness, or a
+general temperature effect.
+
+## Serendipity mode
+
+The requested randomized mode was first inspected without loading the model:
+
+```powershell
+./experiment.ps1 -Offline -DryRun -Serendipity 10 -Temperature 0.8
+```
+
+The plan contained ten distinct seeds, ten temperature-0.8 cases, and no
+greedy case. A separate baseline dry run confirmed that invoking the wrapper
+without the new options still produces the original ten-case matrix. Dry-run
+seeds are intentionally only a preview; the following live invocation chose
+and persisted a fresh plan:
+
+```powershell
+./experiment.ps1 -Offline -Serendipity 10 -Temperature 0.8
+```
+
+The offline run completed from `2026-10-01T19:47:50Z` through
+`2026-10-01T19:50:47Z` (2:47:50–2:50:47 PM CDT). Seed selection happened
+before model loading, all seeds were unique, and every sample's recorded seed
+matched its generation settings.
+
+| Sample | Seed | Output tokens | Stop reason | Repeated 4-gram fraction |
+| ---: | ---: | ---: | --- | ---: |
+| 1 | 5116144773189662633 | 120 | max token limit | 0.222222 |
+| 2 | 8942915116245427591 | 37 | end-of-text token | 0.0 |
+| 3 | 2450739964650165189 | 58 | end-of-text token | 0.0 |
+| 4 | 2601767530375359158 | 120 | max token limit | 0.0 |
+| 5 | 2111741238096957616 | 120 | max token limit | 0.350427 |
+| 6 | 7129719763114775893 | 10 | end-of-text token | 0.0 |
+| 7 | 7780505024600799001 | 16 | end-of-text token | 0.0 |
+| 8 | 7998736472418801153 | 120 | max token limit | 0.051282 |
+| 9 | 7371521932369751199 | 120 | max token limit | 0.017094 |
+| 10 | 8653968528357981570 | 120 | max token limit | 0.153846 |
+
+The warm-up took 7.69 seconds. Full 120-token samples generated at
+4.34–5.44 output tokens/second. Seed `7998736472418801153` produced the most
+prompt-aligned result in this small batch: it continued in the first person
+about enjoying work on artificial general intelligence and pursuing something
+more ambitious than a language model. That is a useful serendipitous sample,
+not evidence that GPT-2 has the identity or experiences described by its text.
+
+The ignored artifacts are under
+`outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/`.
+In addition to `results.json` and `report.md`, the run wrote
+`replay-config.json`; it contains the exact effective configuration and all ten
+seeds even if a later run is interrupted. Passing that file back with
+`-Config` reproduces the same plan rather than drawing new seeds. A dry replay
+through `experiment.ps1` was verified to expand the same ordered ten cases.
+
+A full offline replay was then run from `2026-10-01T20:13:05Z` through
+`2026-10-01T20:16:10Z`, using that saved configuration. All ten complete
+`output_token_ids` arrays matched the original run exactly. The decoded
+continuations, continuation SHA-256 hashes, output counts, stop reasons,
+generation settings, input-token metadata, truncation flags, and repetition
+metrics also matched for every sample. The one-token warm-up matched as well.
+The replay had the same effective-config and prompt hashes, planned cases,
+model record, application source hashes, and material runtime metadata. Only
+operational fields such as timestamps and generation timings differed.
+
+This demonstrates exact replay on this same pinned CPU environment. It should
+not be generalized to different PyTorch builds, dependency versions, hardware,
+or thread settings without repeating the comparison there. The reviewed
+[original](outputs/experiments/20261001T194750Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
+and [replay](outputs/experiments/20261001T201305Z-gpt-2-identity-context-temperature-sweep-serendipity-at-temperature-0-8/report.md)
+reports are tracked as explicit exceptions to the generated-output ignore
+policy.
+
+## Automated tests
+
+The model-free suite passed all nineteen tests under the WSL project
+environment:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Coverage includes matrix expansion; collision-safe random seed selection;
+serendipity CLI planning, validation, and model-load failure persistence; seed
+zero and 63-bit seed handling; deterministic seed replay after intervening
+random generation; one-runner lifecycle; production warm-up; controlled
+prompt-overflow rejection; structured token/EOS/truncation metadata; exact
+result and replay-config persistence; partial failure preservation; atomic
+replacement cleanup; safe Markdown fences; and compatibility of the original
+text-only `generate()` method. Python bytecode compilation for `src` and
+`tests` also passed. The final measured suite time was 1.552 seconds; it did
+not load the model checkpoint.
+
+Finally, the editable WSL package was refreshed without changing dependencies.
+The installed `gpt2-experiment` entry point produced the same ten-case dry-run
+plan. `gpt2-xl --info` remained backward compatible by retaining the historical
+`checkpoint_sha256` key, while also exposing the more precise
+`expected_checkpoint_sha256` name and `info_schema_version: 1`.

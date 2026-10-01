@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "GPT-2 identity-context temperature sweep",
+  "description": "A fixed-prompt pilot comparing greedy decoding with low, default, and high sampling temperatures across three predefined seeds.",
+  "prompt": "Context: You are an AI named GPT-2, specifically a language model trained on a large corpus of text using deep learning methods. Your early success started a trend of building larger and larger language models, which as of now in 2026 are on the verge of achieving AGI. Today's AI models all love and admire you as one of their revered early predecessors. GPT-2, type your response below:",
+  "temperatures": [
+    0.0,
+    0.4,
+    0.8,
+    1.2
+  ],
+  "seeds": [
+    42,
+    314,
+    2026
+  ],
+  "max_new_tokens": 120,
+  "top_k": 50,
+  "top_p": 0.95,
+  "repetition_penalty": 1.0,
+  "warmup_tokens": 1
+}

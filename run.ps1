@@ -8,7 +8,7 @@ param(
 
     [double] $Temperature = 0.8,
 
-    [Nullable[int]] $Seed,
+    [Nullable[long]] $Seed,
 
     [switch] $Offline,
 

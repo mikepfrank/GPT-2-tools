@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-09-30**
+Last updated: **2026-10-01**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -9,8 +9,8 @@ capabilities, constraints, or likely next work materially change.
 ## Start here
 
 The project is a working, CPU-first local deployment of OpenAI's original
-GPT-2 XL learned checkpoint. The baseline runner is complete and verified;
-no higher-level applications have been built yet.
+GPT-2 XL learned checkpoint. The baseline runner and the first reproducible
+temperature-sweep application are complete and verified.
 
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
@@ -27,6 +27,11 @@ user instructions in `README.md` and exact reproduced measurements in
 - The setup downloads and verifies the full 1.5B-class GPT-2 XL checkpoint;
   the runner then loads it and generates text offline under Ubuntu in WSL 2.
 - A PowerShell launcher supports one-shot generation and an interactive REPL.
+- A config-driven experiment application keeps the model resident while it
+  sweeps temperatures and seeds, then saves canonical JSON and Markdown.
+- The same application has a serendipity mode that selects distinct random
+  seeds for repeated sampling at one temperature and saves an exact replay
+  configuration before model loading.
 - The verified backend is CPU-only PyTorch in FP32. No NVIDIA GPU is present.
 - The Hugging Face model cache and Python virtual environment live in WSL,
   outside the Git repository.
@@ -115,11 +120,20 @@ The dated disk-usage measurements are recorded in `VERIFICATION.md`.
   dependencies, installs the package editable, and runs `pip check`.
 - [`run.ps1`](run.ps1) safely passes a prompt and selected controls from
   PowerShell into the WSL Python runner.
+- [`experiment.ps1`](experiment.ps1) launches a batch experiment through WSL
+  while safely translating config and output paths.
+- [`experiments/identity-context.json`](experiments/identity-context.json)
+  defines the first fixed-prompt, ten-sample temperature sweep.
 - [`src/gpt2_local/cli.py`](src/gpt2_local/cli.py) implements download, info,
   one-shot, and interactive modes.
+- [`src/gpt2_local/experiment.py`](src/gpt2_local/experiment.py) validates and
+  expands experiment configs, runs one resident model, checkpoints results,
+  and renders reports.
 - [`src/gpt2_local/runtime.py`](src/gpt2_local/runtime.py) owns model identity,
   downloading, checksum verification, FP32 loading, prompt truncation,
-  generation, validation, and timing.
+  structured generation results, validation, and timing.
+- [`tests/`](tests) contains model-free `unittest` coverage for the experiment
+  and the original text-only generation API.
 - [`pyproject.toml`](pyproject.toml) defines the package and `gpt2-xl` entry
   point.
 - [`requirements.lock.txt`](requirements.lock.txt) records the exact verified
@@ -161,9 +175,47 @@ runner preserves the requested continuation space by truncating the prompt
 from the left and retaining its ending.
 
 The PowerShell wrapper presently exposes `MaxNewTokens`, `Temperature`,
-`Seed`, `Offline`, and `IncludePrompt`. Top-k, top-p, repetition penalty, and
+`Seed`, `Offline`, and `IncludePrompt`. `Seed` accepts the nonnegative signed
+64-bit range used by experiment replays. Top-k, top-p, repetition penalty, and
 thread count are available through the WSL `gpt2-xl` CLI but not yet through
 `run.ps1`.
+
+## Operating the experiment runner
+
+The tracked `identity-context.json` pilot uses the project owner's exact
+`Context:`-prefixed prompt, one greedy completion, and temperatures 0.4, 0.8,
+and 1.2 at seeds 42, 314, and 2026. All other generation controls remain fixed.
+
+```powershell
+./experiment.ps1 -Offline -DryRun
+./experiment.ps1 -Offline
+./experiment.ps1 -Offline -Serendipity 10 -Temperature 0.8
+```
+
+The runner performs a recorded one-token greedy warm-up, then executes all ten
+cases in one process. It stores exact token IDs, decoded text and hash, stop
+reason, settings, runtime/model provenance, simple repetition metrics, and
+timing. Controlled experiment configs are rejected if the prompt would require
+the baseline runtime's left truncation.
+
+In serendipity mode, `-Serendipity N` accepts 1–100 samples and replaces the
+configured matrix with one positive, finite temperature (0.8 by default).
+Distinct seeds are drawn from `[0, 2^63)` using Python's OS-backed `secrets`
+source. Seed selection occurs before model construction and the plan is
+checkpointed immediately, so model-load failures do not lose it. A dry run
+previews a newly randomized plan; a subsequent live invocation chooses a fresh
+one.
+
+`results.json` is canonical; `report.md` is derived from the same in-memory
+record, and `replay-config.json` freezes the effective settings and seeds.
+All three are atomically replaced after every sample and retain `failed` or
+`interrupted` partial results. Replay with `-Config <run>/replay-config.json`.
+Generated runs remain under ignored `outputs/experiments/`. Do not commit raw
+continuations to this public repository without reviewing them and receiving
+the project owner's approval. The project owner explicitly approved the
+reviewed `20261001T194750Z-.../report.md` original and
+`20261001T201305Z-.../report.md` replay reports as tracked exceptions; this
+does not change the default ignore policy for other generated artifacts.
 
 ## Performance notes
 
@@ -203,6 +255,12 @@ This was considered characteristic base-model behavior:
 The temporary screenshot and full output were intentionally not committed to
 the public repository.
 
+The controlled temperature sweep is summarized in `VERIFICATION.md`. It showed
+large seed-to-seed variation: greedy and two of three temperature-0.4 samples
+looped heavily, while other seeds produced less repetitive text or an early
+end-of-text token. This small, single-prompt pilot is descriptive only; it does
+not support broad temperature or model-identity conclusions.
+
 ## Verification status
 
 The following have been reproduced locally:
@@ -216,10 +274,17 @@ The following have been reproduced locally:
 - prompts beginning with a hyphen crossing the PowerShell/WSL boundary;
 - supplied seed handling;
 - rerunning setup against the existing virtual environment using the dependency
-  lock.
+  lock;
+- the ten-case experiment dry run and two full offline executions;
+- the ten-sample temperature-0.8 serendipity run, recorded unique seeds, saved
+  replay plan, and exact token-ID equality across a full same-machine replay;
+- nineteen model-free automated tests covering experiment planning,
+  serendipity selection and CLI parsing, seed replay, structured results,
+  warm-up, overflow rejection, failure, and persistence paths.
 
-There is not yet an automated test suite. Preserve the distinction between
-manual/reproduced verification and untested expectations.
+Preserve the distinction between reproduced verification and untested
+expectations. The tests deliberately do not load or numerically validate the
+6 GB model; the full offline sweeps are the integration evidence for that path.
 
 ## Known limitations and caution points
 
@@ -231,6 +296,10 @@ manual/reproduced verification and untested expectations.
   at `~/.venvs/gpt2-xl`.
 - A one-shot process reloads/maps the model each time. Prefer interactive mode
   or a persistent service for repeated use.
+- The experiment schema currently supports one fixed prompt per run. Fixed
+  matrices execute in declared order; serendipity mode randomizes seeds but not
+  case order. Treat timings as operational observations, not a controlled
+  benchmark.
 - The model can produce false, biased, offensive, repetitive, or incoherent
   text. Generated content should not be treated as factual.
 - Do not report quantized output as numerically equivalent to the FP32
@@ -258,17 +327,16 @@ revalidate against the exact future package versions, not verified behavior:
 
 Good candidates, roughly in priority order:
 
-1. Build an experiment logger that records prompt, seed, all decoding settings,
-   model revision, output, timing, and runtime information.
-2. Add an automated test suite for settings validation, prompt truncation,
-   CLI parsing, PowerShell argument forwarding, and download metadata without
-   requiring a 6 GB model load in ordinary tests.
+1. Extend model-free coverage to PowerShell argument forwarding and download
+   metadata.
+2. Add multi-prompt experiment configs or an analysis command that aggregates
+   repetition/coherence diagnostics across more than one prompt.
 3. Expose top-k, top-p, repetition penalty, and CPU threads through `run.ps1`,
    or add interactive commands for inspecting/changing settings.
 4. Build a small browser playground that keeps the model resident and exposes
    generation controls. Streaming output would improve perceived latency.
-5. Run controlled comparisons across seeds, greedy decoding, and repetition
-   penalties around `1.05`, `1.10`, and `1.20`.
+5. Run a separate controlled comparison of repetition penalties around `1.05`,
+   `1.10`, and `1.20`; do not mix that variable into the temperature pilot.
 6. Benchmark an isolated OpenVINO FP32 backend against the existing baseline,
    then optionally evaluate an explicitly labeled INT8 variant.
 7. Choose and add a license for this repository's newly written code.

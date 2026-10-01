@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import platform
 import sys
 import time
 from dataclasses import dataclass
@@ -41,6 +42,28 @@ class GenerationSettings:
             or self.repetition_penalty <= 0
         ):
             raise ValueError("repetition_penalty must be finite and positive")
+        if self.seed is not None and (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or not 0 <= self.seed <= 2**63 - 1
+        ):
+            raise ValueError("seed must be an integer between 0 and 2^63 - 1")
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    """A continuation plus the measurements needed to reproduce a run."""
+
+    text: str
+    original_input_tokens: int
+    input_tokens: int
+    output_tokens: int
+    output_token_ids: tuple[int, ...]
+    stop_reason: str
+    elapsed_seconds: float
+    tokens_per_second: float
+    prompt_truncated: bool
+    cold_start_included: bool
 
 
 def _format_gib(byte_count: int) -> str:
@@ -154,6 +177,12 @@ class Gpt2Runner:
             flush=True,
         )
 
+    def count_prompt_tokens(self, prompt: str) -> int:
+        """Count GPT-2 tokens without adding model-specific special tokens."""
+        if not prompt:
+            raise ValueError("prompt cannot be empty")
+        return len(self.tokenizer.encode(prompt, add_special_tokens=False))
+
     def generate(
         self,
         prompt: str,
@@ -161,14 +190,31 @@ class Gpt2Runner:
         *,
         include_prompt: bool = False,
     ) -> str:
+        """Generate text and return only the decoded text for CLI compatibility."""
+        return self.generate_result(
+            prompt,
+            settings,
+            include_prompt=include_prompt,
+        ).text
+
+    def generate_result(
+        self,
+        prompt: str,
+        settings: GenerationSettings,
+        *,
+        include_prompt: bool = False,
+    ) -> GenerationResult:
+        """Generate text and return structured timing and token-count metadata."""
         settings.validate()
         if not prompt:
             raise ValueError("prompt cannot be empty")
 
         torch = self._torch
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-        input_length = inputs["input_ids"].shape[-1]
+        original_input_length = inputs["input_ids"].shape[-1]
+        input_length = original_input_length
         maximum_prompt_length = MODEL_CONTEXT_TOKENS - settings.max_new_tokens
+        prompt_truncated = input_length > maximum_prompt_length
         if input_length > maximum_prompt_length:
             print(
                 f"Prompt has {input_length} tokens; keeping its final "
@@ -205,9 +251,10 @@ class Gpt2Runner:
 
         generated_tokens = output.shape[-1] - input_length
         rate = generated_tokens / elapsed if elapsed else float("inf")
+        cold_start_included = self._generation_count == 0
         first_request_note = (
             " First request includes cold page-in and kernel setup."
-            if self._generation_count == 0
+            if cold_start_included
             else ""
         )
         self._generation_count += 1
@@ -217,12 +264,30 @@ class Gpt2Runner:
             file=sys.stderr,
         )
 
-        selected = output[0] if include_prompt else output[0, input_length:]
-        return self.tokenizer.decode(selected, skip_special_tokens=True)
+        generated = output[0, input_length:]
+        generated_token_ids = tuple(int(token_id) for token_id in generated.tolist())
+        stopped_on_eos = bool(
+            generated_token_ids
+            and generated_token_ids[-1] == self.tokenizer.eos_token_id
+        )
+        selected = output[0] if include_prompt else generated
+        return GenerationResult(
+            text=self.tokenizer.decode(selected, skip_special_tokens=True),
+            original_input_tokens=original_input_length,
+            input_tokens=input_length,
+            output_tokens=generated_tokens,
+            output_token_ids=generated_token_ids,
+            stop_reason="eos_token" if stopped_on_eos else "max_new_tokens",
+            elapsed_seconds=elapsed,
+            tokens_per_second=rate,
+            prompt_truncated=prompt_truncated,
+            cold_start_included=cold_start_included,
+        )
 
 
 def runtime_summary() -> dict[str, object]:
     try:
+        import tokenizers
         import torch
         import transformers
     except ImportError as exc:
@@ -231,12 +296,18 @@ def runtime_summary() -> dict[str, object]:
         ) from exc
 
     return {
+        "info_schema_version": 1,
         "model": MODEL_ID,
         "revision": MODEL_REVISION,
+        # Compatibility alias: this is the expected pinned digest, not a live hash.
         "checkpoint_sha256": MODEL_SHA256,
+        "expected_checkpoint_sha256": MODEL_SHA256,
         "python": sys.version.split()[0],
         "pytorch": torch.__version__,
         "transformers": transformers.__version__,
+        "tokenizers": tokenizers.__version__,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
         "cpu_threads": torch.get_num_threads(),
         "logical_cpus": os.cpu_count(),
         "cuda_available": torch.cuda.is_available(),
