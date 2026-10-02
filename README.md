@@ -78,13 +78,16 @@ The first reply can take longer while the checkpoint pages into memory.
 
 The main scrolling view shows the complete current text context: the identity
 and date header, retained examples, retained conversation, and latest reply.
+Human messages are blue and GPT-2 replies are red; the header stays neutral.
 Enter sends a message; Shift+Enter inserts a newline. Choose 0, 1, or 2 example
 rounds and click **New chat** to begin with that many generic demonstrations.
 Examples are authored prompt material, not measured model outputs. The date
 comes from the browser's local calendar when starting the chat.
 
 Temperature, optional seed, and maximum reply length apply to each next
-message. The default reply allowance is 120 tokens, leaving up to 904 input
+message. Leaving the seed blank draws and records a fresh seed for each reply;
+the seed field stays blank for the next random reply. The default reply
+allowance is 120 tokens, leaving up to 904 input
 tokens within GPT-2's 1,024-token window. The fixed header is preserved while
 the oldest complete conversation rounds roll out, starting with the examples.
 The page shows how many rounds have rolled out and lets you inspect the exact
@@ -104,11 +107,29 @@ special-token spelling are reserved in human input.
 The generated-token count includes any sampled stopping tokens; the visible
 context excludes them.
 
+Use **Export chat** at the bottom to save a JSON transcript, and **Import chat**
+to select a saved file and resume it. Exports contain the exact prompt header,
+all conversation blocks (including examples and rounds that left the context
+window), the retained-context position, and the current controls. Each new
+model reply also records its actual seed, requested seed, temperature, reply
+allowance, input prompt, sampled token IDs, stop reason, and timing. Seeds are
+decimal strings so full 63-bit values survive browser JSON handling. Missing
+metadata from older conversations remains explicitly unknown.
+
+Import reconstructs the original context and restores the controls, including
+the example count and random/fixed seed mode. It preserves the saved header's
+date and accepts this app's version-1 JSON files up to 4 MiB. A failed import
+preserves the existing chat and unsent draft. Import opens a file picker;
+export uses Save As where supported, with a filename prompt and browser
+download fallback when the picker is unavailable.
+
 The server binds only to the local loopback interface, uses one resident CPU
-FP32 model, and returns completed replies. Chat history lives only in server
-memory and is lost when the server stops. A browser reload restores the current
-chat while its server remains running. Participant renaming, `/set` commands,
-streaming, and saved chat transcripts are left for later increments.
+FP32 model, and returns completed replies. Live history stays in server memory;
+export it before stopping the server to keep a copy. A browser reload restores
+the current chat while its server remains running. To start with a saved chat,
+run `./chat.ps1 -Offline -RestoreChat ./outputs/chats/example.json` and open the
+printed **Restored chat** URL. Participant renaming, `/set` commands, and
+streaming are left for later increments.
 
 The launcher uses this checkout's source directly through `PYTHONPATH`, without
 changing the shared WSL environment's editable installation. This matters when

@@ -142,7 +142,7 @@ class ChatSessionTests(unittest.TestCase):
         session = self.short_session()
         first_message = "First line.\r\nSecond line.\rThird line."
         first_normalized = "First line.\nSecond line.\nThird line."
-        settings = GenerationSettings(max_new_tokens=120, temperature=0)
+        settings = GenerationSettings(max_new_tokens=120, temperature=0, seed=123)
         session.reply(first_message, settings, self.runner)  # type: ignore[arg-type]
         first_prompt = session.header + HUMAN_MARKER + " " + first_normalized + MODEL_MARKER
         self.assertEqual(self.runner.calls[0], (first_prompt, settings, MESSAGE_DELIMITER_PATTERN))

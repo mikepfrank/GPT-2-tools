@@ -34,7 +34,8 @@ user instructions in `README.md` and exact reproduced measurements in
   the runner then loads it and generates text offline under Ubuntu in WSL 2.
 - A PowerShell launcher supports one-shot generation and an interactive REPL.
 - A localhost browser chat supports a resident model, the complete visible
-  context, Enter/Shift+Enter input, and selectable 0/1/2 example rounds.
+  context with speaker colors, Enter/Shift+Enter input, selectable 0/1/2
+  example rounds, and portable JSON transcripts with import/export.
 - A config-driven experiment application keeps the model resident while it
   sweeps temperatures and seeds, then saves canonical JSON and Markdown.
 - The same application has a serendipity mode that selects distinct random
@@ -259,9 +260,29 @@ custom stops are supplied.
 
 The server uses in-memory sessions and serializes inference because the model
 and Torch RNG are shared. Reloading the browser restores a live session; New
-chat releases its previous session. There is no chat saving, streaming, or
-participant-name command support yet. Generated smoke-test replies were not
-added to the public repository.
+chat releases its previous session. The context widget colors exact human
+segments blue and model segments red without changing prompt text.
+
+`chat_archive.py` owns version-1 JSON export/import. Archives retain the exact
+header/date, complete transcript including evicted rounds, active suffix
+position, current controls, example flags, checkpoint/protocol provenance,
+and available per-reply generation metadata. Imports validate the entire file
+before replacing a session, recreate the saved active context, and restore
+controls. Seed values remain decimal strings across the browser boundary.
+Blank seeds now select and record an OS-random 63-bit seed for each reply;
+requested seed null keeps the next reply in random mode. Historical missing
+metadata stays null, with archive notes explaining the limitation.
+
+The bottom Import/Export buttons use file pickers, with a filename/download
+fallback where Save As is unavailable. Import accepts up to 4 MiB; failed
+imports preserve the current chat and draft. `chat.ps1 -RestoreChat PATH`
+restores an archive at startup and prints a session URL that takes precedence
+over the browser's previous session. Native Save As must be invoked before
+network waits to retain the click's user activation. Keep a live conversation
+exported before restarting its server. Raw user transcripts and smoke-test
+artifacts remain under ignored `outputs/chats/`; do not publish them as part
+of routine code pushes. Streaming and participant-name commands are still
+later increments.
 
 ## Performance notes
 
@@ -386,8 +407,9 @@ Good candidates, roughly in priority order:
    repetition/coherence diagnostics across more than one prompt.
 3. Expose top-k, top-p, repetition penalty, and CPU threads through `run.ps1`,
    or add interactive commands for inspecting/changing settings.
-4. Have the project owner test the first browser-chat increment, then consider
-   streaming output and participant-name commands as separate later increments.
+4. Have the project owner test colored browser-chat transcripts and JSON
+   import/export, then consider streaming output and participant-name commands
+   as separate later increments.
 5. Run a separate controlled comparison of repetition penalties around `1.05`,
    `1.10`, and `1.20`; do not mix that variable into the temperature pilot.
 6. Benchmark an isolated OpenVINO FP32 backend against the existing baseline,

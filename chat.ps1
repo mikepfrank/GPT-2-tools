@@ -6,7 +6,9 @@ param(
     [switch] $Offline,
 
     [ValidateRange(1, 2147483647)]
-    [Nullable[int]] $Threads
+    [Nullable[int]] $Threads,
+
+    [string] $RestoreChat
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +41,14 @@ if ($null -ne $Threads) {
         '--threads',
         $Threads.ToString([Globalization.CultureInfo]::InvariantCulture)
     )
+}
+if ($RestoreChat) {
+    $ChatArchivePath = (Resolve-Path -LiteralPath $RestoreChat).Path
+    $LinuxChatArchivePath = (& wsl.exe -d Ubuntu -- wslpath -a $ChatArchivePath).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $LinuxChatArchivePath) {
+        throw 'Could not translate the saved chat path for Ubuntu under WSL.'
+    }
+    $WslArguments += @('--restore-chat', $LinuxChatArchivePath)
 }
 
 Write-Host "Open http://localhost:$Port/ in your browser after the server starts."

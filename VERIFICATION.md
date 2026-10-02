@@ -308,3 +308,46 @@ invalid/zero-width patterns, human-input rollback, and ordinary blank lines,
 inline labels, one-newline labels, and incomplete boundaries that must remain
 ordinary text. These checks use synthetic generation; they do not claim that
 the real model produced an invented participant in a numerical smoke test.
+
+## Colored context and portable chat archives
+
+Implemented in the same isolated development worktree. The context view
+renders exact structured segments through text nodes: blue human messages,
+red model replies, and a neutral header. Browser DOM checks verified all six
+message segments in a preserved three-round conversation, their computed
+colors, and unchanged context text. The cached GPT-2 tokenizer counted 425
+tokens before and after archive reconstruction. Startup restoration and an
+actual browser file-picker import both restored that exact context, header,
+example count, temperature, reply cap, and random seed mode. The user's raw
+conversation and reconstructed archive remain local and ignored.
+
+A separate offline live-model HTTP smoke test used the approved header,
+zero examples, `Hello, who are you?`, temperature 0.8, and an eight-token reply
+cap. The app selected and recorded seed `1740144430082720755`, while preserving
+requested seed null. It generated eight tokens from a 141-token input and
+stopped at the reply limit. Export followed by import preserved the exact
+context and generation metadata. Repeating the same input in a fresh test
+chat with the recorded seed reproduced the complete sampled token-ID array
+and visible context exactly. The first request took 11.4 seconds including
+cold setup. This verifies seed capture/replay on the current pinned CPU
+runtime, without claiming cross-runtime reproducibility. The actual user's
+restored session was not used for generation tests.
+
+PowerShell parsing and mocked `-RestoreChat` forwarding passed with spaced
+Windows and Linux archive paths, alternate port, offline, and thread options.
+JavaScript syntax and model-free frontend checks covered safe text rendering,
+restored controls and archive notes, explicit restore URLs, Save As before
+network waits, filename/download fallback, and cancelled/failed transfers.
+The project owner completed the native Save As picker in the in-app browser.
+The page reported a completed export, and the resulting JSON file was found
+in the original checkout's ignored `outputs` folder. Its six message blocks
+and retained context matched the preserved conversation exactly. The OS
+dialog was operated by the user; browser import and backend transfers were
+verified separately through automation.
+
+The final **83-test** model-free suite passed in 3.647 seconds. Archive and
+HTTP tests cover exact whitespace/Unicode, complete history and retained
+suffix round trips, 0/1/2 examples, full-range seeds, unknown historical
+metadata, validation and rollback, large-history imports, request limits,
+busy transfers, and note-count boundaries across repeated imports. Python
+compilation and `git diff --check` passed as well.

@@ -18,6 +18,8 @@
       --accent-hover: #204d38;
       --focus: #71a48b;
       --error: #9b352c;
+      --human: #3472a3;
+      --model: #ac3632;
       --shadow: 0 8px 30px rgb(30 55 40 / 5%);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 15px;
@@ -50,6 +52,8 @@
     .context-note { margin: 8px 20px 14px; color: var(--muted); font-size: .8rem; line-height: 1.5; }
     pre { margin: 0; font-family: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: .91rem; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
     #context { min-height: 220px; max-height: min(58vh, 680px); overflow-y: auto; padding: 18px 20px 24px; border-top: 1px solid var(--line); background: var(--soft); border-radius: 0 0 13px 13px; }
+    .role-human { color: var(--human); }
+    .role-model { color: var(--model); }
     #context-info { min-height: 18px; margin: 9px 2px 18px; color: var(--muted); font-size: .77rem; }
     .composer { padding: 18px 20px; }
     textarea { min-height: 104px; resize: vertical; padding: 12px 13px; line-height: 1.5; }
@@ -60,6 +64,8 @@
     details { margin-top: 18px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
     summary { padding: 13px 16px; cursor: pointer; font-size: .82rem; color: var(--muted); }
     details pre { max-height: 360px; overflow-y: auto; padding: 14px 16px; border-top: 1px solid var(--line); font-size: .8rem; }
+    .file-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .file-note { margin: 9px 2px 0; color: var(--muted); font-size: .78rem; line-height: 1.5; }
     .footnote { margin: 20px 2px 0; color: var(--muted); font-size: .78rem; line-height: 1.5; }
     @media (max-width: 800px) {
       .controls { grid-template-columns: 1fr 1fr; }
@@ -89,6 +95,8 @@
         --accent-hover: #9cc9ae;
         --focus: #66977a;
         --error: #f2a69b;
+        --human: #9bceff;
+        --model: #ffa6a1;
         --shadow: none;
       }
       button.primary { color: #13241a; }
@@ -136,7 +144,7 @@
         <h2 id="context-title">Current model context</h2>
         <span id="token-count">— / 1,024 tokens</span>
       </div>
-      <p class="context-note">The complete retained context: fixed header, seeded examples, and recent messages. Older rounds leave this window as it fills.</p>
+      <p class="context-note">The complete retained context: fixed header, seeded examples, and recent messages. <span class="role-human">Human messages are blue</span>; <span class="role-model">GPT-2 replies are red</span>. Older rounds leave this window as it fills.</p>
       <pre id="context" tabindex="0" aria-label="Complete current model context">Starting a chat…</pre>
     </section>
     <p id="context-info"></p>
@@ -155,6 +163,16 @@
       <summary>Inspect the last input prompt</summary>
       <pre id="prompt-text" tabindex="0" aria-label="Exact prompt used for the last reply"></pre>
     </details>
+    <details id="archive-notes" hidden>
+      <summary>Archive notes</summary>
+      <pre id="archive-note-text" tabindex="0" aria-label="Notes about this chat archive"></pre>
+    </details>
+    <div class="file-controls" aria-label="Import and export chat">
+      <button id="import-chat" type="button">Import chat</button>
+      <button id="export-chat" type="button">Export chat</button>
+      <input id="import-file" type="file" accept=".json,application/json" hidden>
+    </div>
+    <p id="file-note" class="file-note">Import and export the conversation and generation settings as JSON.</p>
     <p class="footnote">GPT-2 completes text; it was not trained as a chat assistant. Its replies can be inaccurate, repetitive, or offensive.</p>
   </main>
   <script>
@@ -174,7 +192,13 @@
       send: document.getElementById("send"),
       status: document.getElementById("status"),
       lastPrompt: document.getElementById("last-prompt"),
-      promptText: document.getElementById("prompt-text")
+      promptText: document.getElementById("prompt-text"),
+      archiveNotes: document.getElementById("archive-notes"),
+      archiveNoteText: document.getElementById("archive-note-text"),
+      importChat: document.getElementById("import-chat"),
+      exportChat: document.getElementById("export-chat"),
+      importFile: document.getElementById("import-file"),
+      fileNote: document.getElementById("file-note")
     };
     const sessionKey = "gpt2-local-chat-session";
     let sessionId = null;
@@ -183,7 +207,8 @@
     function setBusy(value) {
       busy = value;
       for (const element of [elements.temperature, elements.seed, elements.replyLimit,
-        elements.exampleRounds, elements.newChat, elements.message, elements.send]) {
+        elements.exampleRounds, elements.newChat, elements.message, elements.send,
+        elements.importChat, elements.exportChat]) {
         element.disabled = value;
       }
       elements.composer.setAttribute("aria-busy", String(value));
@@ -230,22 +255,52 @@
       return payload;
     }
 
-    function applyState(state, updateExampleControl = false) {
+    function renderContext(state) {
+      const blocks = state.context_blocks;
+      const valid = Array.isArray(blocks) && blocks.every((block) => block &&
+        typeof block.text === "string" && ["context", "human", "model"].includes(block.role));
+      if (!valid || blocks.map((block) => block.text).join("") !== state.context_text) {
+        elements.context.textContent = state.context_text;
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      for (const block of blocks) {
+        const span = document.createElement("span");
+        if (block.role !== "context") span.className = `role-${block.role}`;
+        span.textContent = block.text;
+        fragment.appendChild(span);
+      }
+      elements.context.replaceChildren(fragment);
+    }
+
+    function applyState(state, updateControls = false) {
       if (!state || typeof state.session_id !== "string" || typeof state.context_text !== "string") {
         throw new Error("The local server returned an incomplete chat state.");
       }
       sessionId = state.session_id;
       rememberSession(sessionId);
-      elements.context.textContent = state.context_text;
+      renderContext(state);
       elements.context.scrollTop = elements.context.scrollHeight;
       elements.tokenCount.textContent = `${state.context_tokens.toLocaleString()} / 1,024 tokens`;
       const examples = state.retained_example_rounds;
       const dropped = state.dropped_rounds;
       elements.contextInfo.textContent = `${examples} seeded ${examples === 1 ? "round" : "rounds"} retained · ${dropped} older ${dropped === 1 ? "round" : "rounds"} removed`;
-      if (updateExampleControl) elements.exampleRounds.value = String(state.example_rounds);
+      if (updateControls) {
+        elements.exampleRounds.value = String(state.example_rounds);
+        if (state.settings) {
+          elements.temperature.value = String(state.settings.temperature);
+          elements.replyLimit.value = String(state.settings.max_new_tokens);
+          elements.seed.value = state.settings.seed === null ? "" : String(state.settings.seed);
+        }
+      }
       const generation = state.last_generation;
       elements.lastPrompt.hidden = !generation;
       elements.promptText.textContent = generation ? generation.prompt_text : "";
+      const notes = typeof state.notes === "string" ? [state.notes] : Array.isArray(state.notes) ?
+        state.notes.filter((note) => typeof note === "string") : [];
+      elements.archiveNotes.hidden = notes.length === 0;
+      elements.archiveNoteText.textContent = notes.join("\n\n");
+      if (updateControls) elements.archiveNotes.open = false;
     }
 
     function generationStatus(state) {
@@ -303,7 +358,8 @@
         const state = await request("/api/new", {
           example_rounds: Number(elements.exampleRounds.value),
           date: localDate(),
-          previous_session_id: sessionId
+          previous_session_id: sessionId,
+          settings: settings()
         });
         applyState(state, true);
         elements.message.value = "";
@@ -314,6 +370,112 @@
       } finally {
         setBusy(false);
         elements.message.focus();
+      }
+    }
+
+    async function importChat(file) {
+      if (busy || !file) return;
+      setBusy(true);
+      setStatus("Importing chat…");
+      try {
+        if (file.size > 4 * 1024 * 1024) throw new Error("Chat files must be 4 MiB or smaller.");
+        const text = await file.text();
+        let chat;
+        try { chat = JSON.parse(text); } catch (_) {
+          throw new Error("The selected file does not contain valid JSON.");
+        }
+        const state = await request("/api/import", { chat, previous_session_id: sessionId });
+        applyState(state, true);
+        elements.message.value = "";
+        elements.lastPrompt.open = false;
+        const notes = typeof state.notes === "string" ? state.notes : Array.isArray(state.notes) ?
+          state.notes.filter((note) => typeof note === "string").join(" ") : "";
+        setStatus(`Imported ${file.name}. ${notes || generationStatus(state)}`);
+      } catch (error) {
+        setStatus(`Import failed: ${error.message}`, true);
+      } finally {
+        setBusy(false);
+        elements.message.focus();
+      }
+    }
+
+    let nativeSaveAvailable = typeof window.showSaveFilePicker === "function";
+    function updateFileNote() {
+      elements.fileNote.textContent = nativeSaveAvailable ?
+        "Import and export the conversation and generation settings as JSON. Export opens a Save As dialog." :
+        "Import and export the conversation and generation settings as JSON. Export asks for a filename, then uses your browser's download location; the Save As picker is unavailable here.";
+    }
+    updateFileNote();
+
+    async function exportChat() {
+      if (busy) return;
+      if (!sessionId) {
+        setStatus("Start a chat before exporting.", true);
+        return;
+      }
+      let controls;
+      try { controls = settings(); } catch (error) {
+        setStatus(error.message, true);
+        return;
+      }
+      setBusy(true);
+      let handle = null;
+      let filename = `gpt2-chat-${localDate()}.json`;
+      try {
+        // Choose the destination while the original click's activation is live.
+        // Network requests come afterward, so a slow local server cannot expire it.
+        if (nativeSaveAvailable) {
+          try {
+            handle = await window.showSaveFilePicker({
+              suggestedName: filename,
+              types: [{ description: "GPT-2 chat JSON", accept: { "application/json": [".json"] } }]
+            });
+          } catch (error) {
+            if (error.name === "AbortError") return;
+            if (error.name === "SecurityError" || error.name === "NotSupportedError") {
+              nativeSaveAvailable = false;
+              updateFileNote();
+            } else {
+              throw error;
+            }
+          }
+          if (handle) filename = handle.name;
+        }
+        if (!handle) {
+          const chosen = window.prompt("Choose a filename for the exported chat:", filename);
+          if (chosen === null) return;
+          filename = chosen.trim().replace(/[\\/]/g, "_");
+          if (!filename) throw new Error("Choose a nonempty filename.");
+          if (!filename.toLowerCase().endsWith(".json")) filename += ".json";
+        }
+        setStatus("Exporting chat…");
+        const chat = await request("/api/export", { session_id: sessionId, settings: controls });
+        const contents = JSON.stringify(chat, null, 2) + "\n";
+        if (handle) {
+          const writable = await handle.createWritable();
+          try {
+            await writable.write(contents);
+            await writable.close();
+          } catch (error) {
+            try { await writable.abort(); } catch (_) { /* Preserve the write error. */ }
+            throw error;
+          }
+          setStatus(`Exported ${filename}.`);
+        } else {
+          const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          setStatus(`Download started for ${filename}. Check your browser's downloads.`);
+        }
+      } catch (error) {
+        setStatus(`Export failed: ${error.message}`, true);
+      } finally {
+        setBusy(false);
       }
     }
 
@@ -374,9 +536,18 @@
       }
     });
     elements.newChat.addEventListener("click", () => { void newChat(); });
+    elements.importChat.addEventListener("click", () => {
+      if (busy) return;
+      elements.importFile.value = "";
+      elements.importFile.click();
+    });
+    elements.importFile.addEventListener("change", () => { void importChat(elements.importFile.files[0]); });
+    elements.exportChat.addEventListener("click", () => { void exportChat(); });
 
     async function initialize() {
-      const saved = previousSession();
+      const pageUrl = new URL(window.location.href);
+      const explicitSession = pageUrl.searchParams.get("session_id");
+      const saved = explicitSession || previousSession();
       if (!saved) {
         await newChat();
         return;
@@ -386,6 +557,10 @@
       try {
         const state = await request(`/api/state?session_id=${encodeURIComponent(saved)}`);
         applyState(state, true);
+        if (explicitSession) {
+          pageUrl.searchParams.delete("session_id");
+          window.history.replaceState(null, "", pageUrl.pathname + pageUrl.search + pageUrl.hash);
+        }
         setStatus(generationStatus(state));
       } catch (error) {
         missing = error.status === 404;

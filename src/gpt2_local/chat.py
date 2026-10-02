@@ -7,7 +7,7 @@ import re
 import secrets
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,13 +53,14 @@ class Round:
     human: str
     assistant: str
     example: bool = False
+    generation: dict[str, object] | None = None
 
     def text(self) -> str:
         # Assistant text is the exact continuation, including its leading space.
         return HUMAN_MARKER + " " + self.human + MODEL_MARKER + self.assistant
 
     def record(self) -> dict[str, object]:
-        return {"human": self.human, "assistant": self.assistant, "example": self.example}
+        return {"human": self.human, "assistant": self.assistant, "example": self.example, "generation": self.generation}
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,12 @@ def parse_settings(raw: object) -> GenerationSettings:
     return settings
 
 
+def settings_record(settings: GenerationSettings) -> dict[str, object]:
+    record = asdict(settings)
+    record["seed"] = str(settings.seed) if settings.seed is not None else None
+    return record
+
+
 @dataclass
 class ChatSession:
     session_id: str
@@ -109,9 +116,21 @@ class ChatSession:
     transcript: list[Round] = field(default_factory=list)
     dropped_rounds: int = 0
     last_generation: dict[str, object] | None = None
+    settings: GenerationSettings = field(default_factory=lambda: GenerationSettings(max_new_tokens=120))
+    notes: list[str] = field(default_factory=list)
 
     def context_text(self) -> str:
         return self.header + "".join(item.text() for item in self.rounds)
+
+    def context_blocks(self, rounds: list[Round] | None = None, pending: str | None = None) -> list[dict[str, str]]:
+        blocks = [{"role": "context", "text": self.header}]
+        for item in self.rounds if rounds is None else rounds:
+            blocks.append({"role": "human", "text": HUMAN_MARKER + " " + item.human})
+            blocks.append({"role": "model", "text": MODEL_MARKER + item.assistant})
+        if pending is not None:
+            blocks.append({"role": "human", "text": HUMAN_MARKER + " " + pending})
+            blocks.append({"role": "model", "text": MODEL_MARKER})
+        return blocks
 
     def state(self, count_tokens: Callable[[str], int]) -> dict[str, object]:
         context = self.context_text()
@@ -124,6 +143,9 @@ class ChatSession:
             "dropped_rounds": self.dropped_rounds,
             "turns": [item.record() for item in self.transcript],
             "last_generation": self.last_generation,
+            "context_blocks": self.context_blocks(),
+            "settings": settings_record(self.settings),
+            "notes": list(self.notes),
         }
 
     def prepare(
@@ -165,30 +187,37 @@ class ChatSession:
             context_tokens=prepared.input_tokens,
             retained_example_rounds=sum(item.example for item in prepared.retained_rounds),
             dropped_rounds=self.dropped_rounds + len(self.rounds) - len(prepared.retained_rounds),
+            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message),
         )
         return state
 
     def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
         prepared = self.prepare(message, settings, runner.count_prompt_tokens)
-        result = runner.generate_result(prepared.prompt, settings, stop_pattern=MESSAGE_DELIMITER_PATTERN)
+        effective_settings = settings if settings.seed is not None else replace(settings, seed=secrets.randbelow(2**63))
+        result = runner.generate_result(prepared.prompt, effective_settings, stop_pattern=MESSAGE_DELIMITER_PATTERN)
         if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
             raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
         reply_text = _trim_reply(result.text)
-        new_round = Round(human=prepared.message, assistant=reply_text)
-        # Commit history only after successful inference and validation.
-        self.dropped_rounds += len(self.rounds) - len(prepared.retained_rounds)
-        self.rounds = prepared.retained_rounds + [new_round]
-        self.transcript.append(new_round)
-        self.last_generation = {
+        generation = {
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "stop_reason": "stop_sequence" if reply_text != result.text else result.stop_reason,
             "elapsed_seconds": result.elapsed_seconds,
-            "seed": str(settings.seed) if settings.seed is not None else None,
+            "seed": str(effective_settings.seed),
+            "requested_seed": str(settings.seed) if settings.seed is not None else None,
             "temperature": settings.temperature,
             "max_new_tokens": settings.max_new_tokens,
             "prompt_text": prepared.prompt,
+            "output_token_ids": list(result.output_token_ids),
+            "cold_start_included": result.cold_start_included,
         }
+        new_round = Round(human=prepared.message, assistant=reply_text, generation=generation)
+        # Commit history and metadata only after successful inference and validation.
+        self.dropped_rounds += len(self.rounds) - len(prepared.retained_rounds)
+        self.rounds = prepared.retained_rounds + [new_round]
+        self.transcript.append(new_round)
+        self.last_generation = generation
+        self.settings = settings
 
 
 class ChatApplication:
@@ -198,7 +227,7 @@ class ChatApplication:
         # Torch's RNG and the model are shared; serialize inference and state updates.
         self.lock = threading.Lock()
 
-    def new_session(self, example_rounds: object, date_text: object, previous_session_id: object = None) -> ChatSession:
+    def new_session(self, example_rounds: object, date_text: object, previous_session_id: object = None, settings: GenerationSettings | None = None) -> ChatSession:
         if isinstance(example_rounds, bool) or not isinstance(example_rounds, int) or example_rounds not in (0, 1, 2):
             raise ValueError("Choose 0, 1, or 2 example rounds")
         if not isinstance(date_text, str):
@@ -211,8 +240,22 @@ class ChatApplication:
             raise ValueError("Date must use YYYY-MM-DD")
         if previous_session_id is not None and not isinstance(previous_session_id, str):
             raise ValueError("Previous session identifier must be text")
+        settings = settings if settings is not None else GenerationSettings(max_new_tokens=120)
+        settings.validate()
         examples = [Round(human, assistant, example=True) for human, assistant in EXAMPLES[:example_rounds]]
-        session = ChatSession(secrets.token_urlsafe(24), prompt_header(chat_date), example_rounds, list(examples), list(examples))
+        session = ChatSession(secrets.token_urlsafe(24), prompt_header(chat_date), example_rounds, list(examples), list(examples), settings=settings)
+        self.sessions[session.session_id] = session
+        if previous_session_id is not None:
+            self.sessions.pop(previous_session_id, None)
+        return session
+
+    def import_session(self, document: object, previous_session_id: object = None) -> ChatSession:
+        from .chat_archive import import_chat
+
+        if previous_session_id is not None and not isinstance(previous_session_id, str):
+            raise ValueError("Previous session identifier must be text")
+        session = import_chat(document, self.runner.count_prompt_tokens)
+        # Full validation precedes replacing any existing session.
         self.sessions[session.session_id] = session
         if previous_session_id is not None:
             self.sessions.pop(previous_session_id, None)
@@ -287,8 +330,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 65536:
-                raise ValueError("Request body must be between 1 and 65536 bytes")
+            maximum = 4 * 1024 * 1024 if self.path == "/api/import" else 65536
+            if not 0 < length <= maximum:
+                raise ValueError(f"Request body must be between 1 and {maximum} bytes")
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("Request must be a JSON object")
@@ -301,7 +345,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/api/new":
-                session = app.new_session(body.get("example_rounds", 2), body.get("date"), body.get("previous_session_id"))
+                session = app.new_session(body.get("example_rounds", 2), body.get("date"), body.get("previous_session_id"), parse_settings(body.get("settings", {})))
             elif self.path == "/api/message":
                 session = app.session(body.get("session_id"))
                 settings = parse_settings(body.get("settings", {}))
@@ -311,6 +355,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                 settings = parse_settings(body.get("settings", {}))
                 self._json(200, session.preview(body.get("message"), settings, app.runner.count_prompt_tokens))
                 return
+            elif self.path == "/api/export":
+                from .chat_archive import export_chat
+
+                session = app.session(body.get("session_id"))
+                export_settings = parse_settings(body["settings"]) if "settings" in body else session.settings
+                self._json(200, export_chat(session, export_settings))
+                session.settings = export_settings
+                return
+            elif self.path == "/api/import":
+                session = app.import_session(body.get("chat"), body.get("previous_session_id"))
             else:
                 self._json(404, {"error": "Not found"})
                 return
@@ -331,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--threads", type=int)
+    parser.add_argument("--restore-chat", type=Path, help="Restore a local exported chat before serving")
     arguments = parser.parse_args(argv)
     if not 1 <= arguments.port <= 65535:
         parser.error("port must be between 1 and 65535")
@@ -340,6 +395,12 @@ def main(argv: list[str] | None = None) -> int:
     server = ChatServer(("127.0.0.1", arguments.port), ChatApplication(None))  # type: ignore[arg-type]
     try:
         server.application.runner = Gpt2Runner(offline=arguments.offline, threads=arguments.threads)
+        if arguments.restore_chat is not None:
+            if arguments.restore_chat.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError("Chat file exceeds the 4 MiB limit")
+            with arguments.restore_chat.open(encoding="utf-8") as chat_file:
+                restored = server.application.import_session(json.load(chat_file))
+            print(f"Restored chat: http://localhost:{server.server_port}/?session_id={restored.session_id}", flush=True)
         print(f"GPT-2 chat ready: http://localhost:{server.server_port}/\nPress Ctrl+C to stop.", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
