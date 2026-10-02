@@ -19,6 +19,7 @@ from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner
 
 HUMAN_MARKER = "\n\nHuman>"
 MODEL_MARKER = "\n\nGPT-2>"
+OMISSION_MARKER = "\n\n...\n\n"
 MESSAGE_DELIMITER_PATTERN = r"\n\n[^\s>]+>"
 MESSAGE_DELIMITER_RE = re.compile(MESSAGE_DELIMITER_PATTERN)
 EXAMPLES = (
@@ -72,6 +73,7 @@ class PreparedInput:
     prompt: str
     input_tokens: int
     retained_rounds: list[Round]
+    header: str | None = None
 
 
 def _trim_reply(text: str) -> str:
@@ -157,8 +159,11 @@ class ChatSession:
     def context_text(self) -> str:
         return self.header + "".join(item.text() for item in self.rounds)
 
-    def context_blocks(self, rounds: list[Round] | None = None, pending: str | None = None) -> list[dict[str, str]]:
-        blocks = [{"role": "context", "text": self.header}]
+    def context_blocks(
+        self, rounds: list[Round] | None = None, pending: str | None = None,
+        *, header: str | None = None,
+    ) -> list[dict[str, str]]:
+        blocks = [{"role": "context", "text": self.header if header is None else header}]
         for item in self.rounds if rounds is None else rounds:
             blocks.append({"role": "human", "text": HUMAN_MARKER + " " + item.human})
             blocks.append({"role": "model", "text": MODEL_MARKER + item.assistant})
@@ -201,8 +206,11 @@ class ChatSession:
         retained = list(self.rounds)
         budget = MODEL_CONTEXT_TOKENS - settings.max_new_tokens
         suffix = HUMAN_MARKER + " " + message + MODEL_MARKER
+        header = self.header
         while True:
-            prompt = self.header + "".join(item.text() for item in retained) + suffix
+            if (self.dropped_rounds or len(retained) < len(self.rounds)) and not header.endswith(OMISSION_MARKER):
+                header += OMISSION_MARKER
+            prompt = header + "".join(item.text() for item in retained) + suffix
             prompt_tokens = count_tokens(prompt)
             if prompt_tokens <= budget:
                 break
@@ -213,7 +221,7 @@ class ChatSession:
                     "Shorten the message or reduce the reply length."
                 )
             retained.pop(0)
-        return PreparedInput(message, prompt, prompt_tokens, retained)
+        return PreparedInput(message, prompt, prompt_tokens, retained, header)
 
     def preview(self, message: object, settings: GenerationSettings, count_tokens: Callable[[str], int]) -> dict[str, object]:
         prepared = self.prepare(message, settings, count_tokens)
@@ -223,7 +231,7 @@ class ChatSession:
             context_tokens=prepared.input_tokens,
             retained_example_rounds=sum(item.example for item in prepared.retained_rounds),
             dropped_rounds=self.dropped_rounds + len(self.rounds) - len(prepared.retained_rounds),
-            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message),
+            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message, header=prepared.header),
         )
         return state
 
@@ -233,6 +241,8 @@ class ChatSession:
         reply_text, generation = _generate_reply(prepared, settings, effective_settings, runner)
         new_round = Round(human=prepared.message, assistant=reply_text, generation=generation)
         # Commit history and metadata only after successful inference and validation.
+        if prepared.header is not None:
+            self.header = prepared.header
         self.dropped_rounds += len(self.rounds) - len(prepared.retained_rounds)
         self.rounds = prepared.retained_rounds + [new_round]
         self.transcript.append(new_round)
@@ -273,7 +283,7 @@ class ChatSession:
             )
         starting = resolve_seed(settings, self.settings.seed)
         effective = replace(starting, seed=(starting.seed + 1) % (2**63))
-        return PreparedInput(last.human, prompt, input_tokens, list(self.rounds[:-1])), effective
+        return PreparedInput(last.human, prompt, input_tokens, list(self.rounds[:-1]), self.header), effective
 
     def regeneration_preview(self, settings: GenerationSettings, count_tokens: Callable[[str], int]) -> dict[str, object]:
         prepared, effective = self._prepare_regeneration(settings, count_tokens)
@@ -281,7 +291,7 @@ class ChatSession:
         state.update(
             context_text=prepared.prompt,
             context_tokens=prepared.input_tokens,
-            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message),
+            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message, header=prepared.header),
             settings=settings_record(effective),
         )
         return state

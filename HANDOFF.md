@@ -15,9 +15,10 @@ temperature-sweep application are complete and verified.
 The first browser-chat increment is developed separately on `codex/gpt2-chat`,
 starting from `b48ff08`. Its local worktree is `.worktrees/gpt2-chat`; the
 original `main` checkout and shared editable WSL installation remain intact.
-The project owner has tested basic chat, speaker colors, seed recording, and
-import/export. Last-reply regeneration is the next increment; streaming,
-participant renaming, and in-context commands remain later work.
+The project owner has tested basic chat, speaker colors, seed recording,
+import/export, and last-reply regeneration. Context omission hints are the
+latest increment; streaming, participant renaming, and in-context commands
+remain later work.
 
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
@@ -249,6 +250,15 @@ the 1,024-token window, including the examples first. A 120-token reply
 allowance is the default; oversized current messages are rejected without
 changing history. `/api/preview` shows the exact next input before inference,
 and the main scrolling widget then shows the retained input plus visible reply.
+At the first eviction, `prepare` proposes appending literal `\n\n...\n\n`
+to the header, then repacks with its token overhead included. A successful
+reply commits that header; preview and failed inference leave it unchanged.
+The suffix is appended only once, including when seeded examples are evicted,
+and persists through export/import in the existing `prompt_header` field.
+Legacy archives with dropped rounds and an unmarked header remain byte-exact
+on import and regeneration; the next new message adds the hint. Existing
+message delimiters still contribute their own blank-line prefix after the
+literal header suffix. New chat starts again without the hint.
 
 The runtime's optional literal `stop_sequences` and regex `stop_pattern`
 support match decoded continuation text across token boundaries. The chat

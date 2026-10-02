@@ -10,6 +10,7 @@ from gpt2_local.chat import (
     HUMAN_MARKER,
     MESSAGE_DELIMITER_PATTERN,
     MODEL_MARKER,
+    OMISSION_MARKER,
     ChatApplication,
     ChatServer,
     ChatSession,
@@ -148,7 +149,7 @@ class ChatRegenerateTests(unittest.TestCase):
         session.rounds = [oldest, recent]
         session.transcript = [oldest, recent]
         question = "Latest synthetic question?"
-        expected_prompt = session.header + recent.text() + HUMAN_MARKER + " " + question + MODEL_MARKER
+        expected_prompt = session.header + OMISSION_MARKER + recent.text() + HUMAN_MARKER + " " + question + MODEL_MARKER
         settings = GenerationSettings(max_new_tokens=MODEL_CONTEXT_TOKENS - len(expected_prompt), seed=31)
         session.reply(question, settings, self.runner)  # type: ignore[arg-type]
         self.assertEqual(session.dropped_rounds, 1)

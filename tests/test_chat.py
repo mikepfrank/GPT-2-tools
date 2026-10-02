@@ -12,6 +12,7 @@ from gpt2_local.chat import (
     HUMAN_MARKER,
     MESSAGE_DELIMITER_PATTERN,
     MODEL_MARKER,
+    OMISSION_MARKER,
     ChatApplication,
     ChatServer,
     ChatSession,
@@ -125,7 +126,7 @@ class ChatSessionTests(unittest.TestCase):
         session = self.short_session([oldest, recent])
         before = copy.deepcopy(session.state(len))
         message = "Latest question?"
-        expected_prompt = session.header + recent.text() + HUMAN_MARKER + " " + message + MODEL_MARKER
+        expected_prompt = session.header + OMISSION_MARKER + recent.text() + HUMAN_MARKER + " " + message + MODEL_MARKER
         settings = GenerationSettings(max_new_tokens=MODEL_CONTEXT_TOKENS - len(expected_prompt))
         preview = session.preview(message, settings, self.runner.count_prompt_tokens)
         self.assertEqual(preview["context_text"], expected_prompt)
@@ -163,7 +164,7 @@ class ChatSessionTests(unittest.TestCase):
         recent = Round("Recent question?", " Recent answer.")
         session = self.short_session([oldest, recent])
         latest = "Latest question\nwith a line break."
-        expected_prompt = session.header + recent.text() + HUMAN_MARKER + " " + latest + MODEL_MARKER
+        expected_prompt = session.header + OMISSION_MARKER + recent.text() + HUMAN_MARKER + " " + latest + MODEL_MARKER
         settings = GenerationSettings(max_new_tokens=MODEL_CONTEXT_TOKENS - len(expected_prompt))
         session.reply(latest, settings, self.runner)  # type: ignore[arg-type]
         self.assertEqual(self.runner.calls[-1][0], expected_prompt)
@@ -215,7 +216,7 @@ class ChatSessionTests(unittest.TestCase):
     def test_inference_failure_keeps_even_rounds_that_would_have_been_dropped(self) -> None:
         session = self.short_session([Round("old", " answer"), Round("recent", " answer")])
         before = copy.deepcopy(session.state(len))
-        minimum_prompt = session.header + HUMAN_MARKER + " question" + MODEL_MARKER
+        minimum_prompt = session.header + OMISSION_MARKER + HUMAN_MARKER + " question" + MODEL_MARKER
         settings = GenerationSettings(max_new_tokens=MODEL_CONTEXT_TOKENS - len(minimum_prompt))
         self.runner.failure = RuntimeError("synthetic inference failure")
         with self.assertRaisesRegex(RuntimeError, "synthetic inference failure"):

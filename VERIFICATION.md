@@ -424,3 +424,39 @@ The app rejected it because the original 141-token prompt leaves at most 883
 reply tokens. The current candidate, seed 43, typed controls, and unsent draft
 were preserved without inference. The owner's restored conversation was left
 open with the new button enabled for their hands-on test.
+
+## Context omission hint (2026-10-02)
+
+The first successful context eviction now appends literal `\n\n...\n\n`
+to the header once. The marker's token cost participates in packing before
+inference; it can require another whole-round eviction. Preview proposes the
+marked header without committing it, and failed generation preserves the
+original header/history. The existing archive header field stores the marker,
+so no schema change was required. Legacy archives remain exact on import and
+regeneration and receive the hint on the next new message.
+
+All **125 model-free tests** passed in 4.730 seconds, with Python compilation
+and diff checks passing. Fourteen new tests cover no-eviction behavior,
+matching preview blocks, one-time marker persistence, its exact reserve
+boundary and extra eviction, overflow and inference/accounting rollback,
+example eviction, legacy version-1/version-2 import and original-prompt
+regeneration, marked archive round trips, and New chat reset. Existing
+eviction boundary tests were updated to reserve the marker's token cost.
+
+The owner exported their latest chat before restart. Startup restoration
+preserved all nine rounds, the exact 893-token retained context with one
+omitted round, and all candidate/generation metadata. A live HTTP preview of
+a short next message added the marker, packed 807 input tokens beside a
+120-token reply reserve, and left the stored session unchanged. The browser
+showed the restored French exchange; no test sampled from that live session.
+
+A separate synthetic archive held one explicitly authored placeholder round
+in a 1,016-token context. Using the real cached tokenizer, the short approved
+`Hello, who are you?` input with an eight-token reply reserve evicted that round
+and included the omission hint. The offline model generated eight tokens from
+the exact 145-token preview input in 11.7 seconds including cold setup, using
+temperature 0.8 and seed 42. The hint appeared once in the visible header,
+the counter showed one removed round, and the full transcript retained both
+rounds. Export/import preserved the exact marked context and generation
+prompt; regeneration preview reproduced that saved prompt exactly. Raw test
+archives and the owner's conversation remain local and ignored.
