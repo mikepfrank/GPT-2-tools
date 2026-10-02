@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import secrets
@@ -54,13 +55,15 @@ class Round:
     assistant: str
     example: bool = False
     generation: dict[str, object] | None = None
+    previous_responses: list[dict[str, object]] = field(default_factory=list)
 
     def text(self) -> str:
         # Assistant text is the exact continuation, including its leading space.
         return HUMAN_MARKER + " " + self.human + MODEL_MARKER + self.assistant
 
     def record(self) -> dict[str, object]:
-        return {"human": self.human, "assistant": self.assistant, "example": self.example, "generation": self.generation}
+        return {"human": self.human, "assistant": self.assistant, "example": self.example, "generation": self.generation,
+                "previous_responses": copy.deepcopy(self.previous_responses)}
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,30 @@ def resolve_seed(settings: GenerationSettings, fallback_seed: int | None = None)
     return replace(settings, seed=seed)
 
 
+def _generate_reply(
+    prepared: PreparedInput, requested: GenerationSettings,
+    effective: GenerationSettings, runner: Gpt2Runner,
+) -> tuple[str, dict[str, object]]:
+    result = runner.generate_result(prepared.prompt, effective, stop_pattern=MESSAGE_DELIMITER_PATTERN)
+    if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
+        raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
+    reply_text = _trim_reply(result.text)
+    generation = {
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "stop_reason": "stop_sequence" if reply_text != result.text else result.stop_reason,
+        "elapsed_seconds": result.elapsed_seconds,
+        "seed": str(effective.seed),
+        "requested_seed": str(requested.seed) if requested.seed is not None else None,
+        "temperature": effective.temperature,
+        "max_new_tokens": effective.max_new_tokens,
+        "prompt_text": prepared.prompt,
+        "output_token_ids": list(result.output_token_ids),
+        "cold_start_included": result.cold_start_included,
+    }
+    return reply_text, generation
+
+
 @dataclass
 class ChatSession:
     session_id: str
@@ -154,6 +181,7 @@ class ChatSession:
             "context_blocks": self.context_blocks(),
             "settings": settings_record(self.settings),
             "notes": list(self.notes),
+            "can_regenerate": self.can_regenerate(),
         }
 
     def prepare(
@@ -202,23 +230,7 @@ class ChatSession:
     def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
         prepared = self.prepare(message, settings, runner.count_prompt_tokens)
         effective_settings = resolve_seed(settings, self.settings.seed)
-        result = runner.generate_result(prepared.prompt, effective_settings, stop_pattern=MESSAGE_DELIMITER_PATTERN)
-        if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
-            raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
-        reply_text = _trim_reply(result.text)
-        generation = {
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "stop_reason": "stop_sequence" if reply_text != result.text else result.stop_reason,
-            "elapsed_seconds": result.elapsed_seconds,
-            "seed": str(effective_settings.seed),
-            "requested_seed": str(settings.seed) if settings.seed is not None else None,
-            "temperature": settings.temperature,
-            "max_new_tokens": settings.max_new_tokens,
-            "prompt_text": prepared.prompt,
-            "output_token_ids": list(result.output_token_ids),
-            "cold_start_included": result.cold_start_included,
-        }
+        reply_text, generation = _generate_reply(prepared, settings, effective_settings, runner)
         new_round = Round(human=prepared.message, assistant=reply_text, generation=generation)
         # Commit history and metadata only after successful inference and validation.
         self.dropped_rounds += len(self.rounds) - len(prepared.retained_rounds)
@@ -226,6 +238,66 @@ class ChatSession:
         self.transcript.append(new_round)
         self.last_generation = generation
         self.settings = effective_settings
+
+    def can_regenerate(self) -> bool:
+        return bool(
+            self.rounds and self.transcript
+            and self.rounds[-1] == self.transcript[-1]
+            and not self.rounds[-1].example
+            and self.rounds[-1].generation is not None
+            and isinstance(self.rounds[-1].generation.get("prompt_text"), str)
+        )
+
+    def _prepare_regeneration(
+        self, settings: GenerationSettings, count_tokens: Callable[[str], int],
+    ) -> tuple[PreparedInput, GenerationSettings]:
+        from .chat_archive import MAX_PREVIOUS_RESPONSES
+
+        settings.validate()
+        if not self.can_regenerate():
+            raise ValueError("There is no generated reply with a recorded input prompt to regenerate")
+        if settings.temperature == 0:
+            raise ValueError("Regenerate requires temperature greater than 0; changing a seed does not change greedy decoding")
+        last = self.rounds[-1]
+        if len(last.previous_responses) >= MAX_PREVIOUS_RESPONSES:
+            raise ValueError(f"A reply can retain at most {MAX_PREVIOUS_RESPONSES} previous responses")
+        prompt = last.generation["prompt_text"]
+        expected = self.header + "".join(item.text() for item in self.rounds[:-1]) + HUMAN_MARKER + " " + last.human + MODEL_MARKER
+        if prompt != expected:
+            raise ValueError("The recorded last prompt does not match the retained chat; regeneration was cancelled")
+        input_tokens = count_tokens(prompt)
+        if input_tokens + settings.max_new_tokens > MODEL_CONTEXT_TOKENS:
+            raise ValueError(
+                f"The original prompt needs {input_tokens} tokens; reduce the reply limit "
+                f"to at most {MODEL_CONTEXT_TOKENS - input_tokens} to regenerate it unchanged"
+            )
+        starting = resolve_seed(settings, self.settings.seed)
+        effective = replace(starting, seed=(starting.seed + 1) % (2**63))
+        return PreparedInput(last.human, prompt, input_tokens, list(self.rounds[:-1])), effective
+
+    def regeneration_preview(self, settings: GenerationSettings, count_tokens: Callable[[str], int]) -> dict[str, object]:
+        prepared, effective = self._prepare_regeneration(settings, count_tokens)
+        state = self.state(count_tokens)
+        state.update(
+            context_text=prepared.prompt,
+            context_tokens=prepared.input_tokens,
+            context_blocks=self.context_blocks(prepared.retained_rounds, prepared.message),
+            settings=settings_record(effective),
+        )
+        return state
+
+    def regenerate(self, settings: GenerationSettings, runner: Gpt2Runner) -> None:
+        prepared, effective = self._prepare_regeneration(settings, runner.count_prompt_tokens)
+        reply_text, generation = _generate_reply(prepared, settings, effective, runner)
+        last = self.rounds[-1]
+        previous = copy.deepcopy(last.previous_responses)
+        previous.append({"text": last.assistant, "generation": copy.deepcopy(last.generation)})
+        replacement = Round(last.human, reply_text, generation=generation, previous_responses=previous)
+        # Replace only after inference succeeds; no extra human turn or eviction.
+        self.rounds[-1] = replacement
+        self.transcript[-1] = replacement
+        self.last_generation = generation
+        self.settings = effective
 
 
 class ChatApplication:
@@ -371,6 +443,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                 settings = parse_settings(body.get("settings", {}))
                 self._json(200, session.preview(body.get("message"), settings, app.runner.count_prompt_tokens))
                 return
+            elif self.path == "/api/regenerate-preview":
+                session = app.session(body.get("session_id"))
+                settings = parse_settings(body.get("settings", {}))
+                self._json(200, session.regeneration_preview(settings, app.runner.count_prompt_tokens))
+                return
+            elif self.path == "/api/regenerate":
+                session = app.session(body.get("session_id"))
+                settings = parse_settings(body.get("settings", {}))
+                session.regenerate(settings, app.runner)
             elif self.path == "/api/export":
                 from .chat_archive import export_chat
 

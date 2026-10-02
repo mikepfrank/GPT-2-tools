@@ -96,6 +96,17 @@ input prompt for the last reply. If a message cannot fit beside the header and
 reply allowance, shorten it or reduce the reply length; the app preserves your
 unsent input and existing history.
 
+Click **Regenerate last reply** to replace the latest model reply using its
+exact original input prompt. The app increments the seed shown in the control
+by one first; a blank control uses the stored active seed. The new seed appears
+after a successful reply and becomes the active seed for subsequent messages.
+The largest supported seed, `9223372036854775807`, wraps to zero. Regeneration
+uses the current temperature and reply limit, and requires temperature above
+zero because greedy decoding ignores the seed. A different seed can still
+produce the same text. If an increased reply allowance cannot fit alongside
+the original prompt, reduce it; regeneration preserves that prompt unchanged.
+An error preserves the existing reply, stored seed, and unsent draft.
+
 GPT-2's native end-of-text token, `<|endoftext|>` (50256), ends generation.
 The chat also stops at the first new-message boundary matching
 `\n\n[^\s>]+>`: a blank line, a nonempty speaker label containing no whitespace
@@ -119,9 +130,16 @@ metadata from older conversations remains explicitly unknown. When an older
 archive has no active seed, import chooses one for future replies; it does not
 recover or change the historical seeds.
 
+Regenerated replies retain earlier candidates in the model block's
+`previous_responses` list, each with its text and generation metadata. Only
+the current candidate enters the model context. The app can regenerate a
+reply only when its original input prompt was recorded; authored examples
+and older replies with missing metadata do not qualify.
+
 Import reconstructs the original context and restores the controls, including
 the example count and the saved active seed. It preserves the saved header's
-date and accepts this app's version-1 JSON files up to 4 MiB. A failed import
+date and accepts this app's version-1 and version-2 JSON files up to 4 MiB.
+New exports use version 2, including the previous-response lists. A failed import
 preserves the existing chat and unsent draft. Import opens a file picker;
 export uses Save As where supported, with a filename prompt and browser
 download fallback when the picker is unavailable.

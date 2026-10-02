@@ -58,7 +58,9 @@
     .composer { padding: 18px 20px; }
     textarea { min-height: 104px; resize: vertical; padding: 12px 13px; line-height: 1.5; }
     .composer-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; }
+    .composer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
     .keyboard-hint { margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
+    .regenerate-note { margin: 12px 0 0; color: var(--muted); font-size: .78rem; line-height: 1.5; }
     #status { margin: 14px 2px 0; min-height: 22px; color: var(--muted); font-size: .85rem; line-height: 1.5; }
     #status.error { color: var(--error); }
     details { margin-top: 18px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
@@ -80,7 +82,8 @@
       .context-heading { padding: 16px 16px 0; flex-wrap: wrap; gap: 6px; }
       .context-note { margin: 8px 16px 12px; }
       #context { padding: 16px; max-height: 55vh; }
-      .composer-footer { align-items: flex-start; }
+      .composer-footer { align-items: stretch; flex-direction: column; }
+      .composer-actions { justify-content: flex-start; }
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -154,8 +157,12 @@
       <textarea id="message" placeholder="Say something to GPT-2…" autocomplete="off" required></textarea>
       <div class="composer-footer">
         <p class="keyboard-hint">Enter to send · Shift+Enter for a new line</p>
-        <button id="send" class="primary" type="submit">Send message</button>
+        <div class="composer-actions">
+          <button id="regenerate" type="button" disabled aria-describedby="regenerate-note">Regenerate last reply</button>
+          <button id="send" class="primary" type="submit">Send message</button>
+        </div>
       </div>
+      <p id="regenerate-note" class="regenerate-note">Regenerate uses the same input prompt with the current temperature and reply limit. It replaces the latest reply and increases the seed by 1 (blank uses the chat seed); the maximum seed wraps to 0. Choose a temperature above 0 to sample an alternative.</p>
     </form>
     <p id="status" role="status" aria-live="polite">Connecting to the local model…</p>
 
@@ -190,6 +197,7 @@
       composer: document.getElementById("composer"),
       message: document.getElementById("message"),
       send: document.getElementById("send"),
+      regenerate: document.getElementById("regenerate"),
       status: document.getElementById("status"),
       lastPrompt: document.getElementById("last-prompt"),
       promptText: document.getElementById("prompt-text"),
@@ -203,6 +211,7 @@
     const sessionKey = "gpt2-local-chat-session";
     let sessionId = null;
     let busy = false;
+    let canRegenerate = false;
 
     function setBusy(value) {
       busy = value;
@@ -211,6 +220,7 @@
         elements.importChat, elements.exportChat]) {
         element.disabled = value;
       }
+      elements.regenerate.disabled = value || !canRegenerate;
       elements.composer.setAttribute("aria-busy", String(value));
     }
 
@@ -282,6 +292,10 @@
         throw new Error("The local server returned an incomplete chat state.");
       }
       sessionId = state.session_id;
+      canRegenerate = state.can_regenerate === true;
+      elements.regenerate.disabled = busy || !canRegenerate;
+      elements.regenerate.title = canRegenerate ? "Replace the latest reply using the next seed." :
+        "Available after a reply with its original generation record has been generated.";
       rememberSession(sessionId);
       renderContext(state);
       elements.context.scrollTop = elements.context.scrollHeight;
@@ -307,7 +321,7 @@
       if (updateControls) elements.archiveNotes.open = false;
     }
 
-    function generationStatus(state) {
+    function generationStatus(state, regenerated = false) {
       const generation = state.last_generation;
       if (!generation) return "Ready. The model stays loaded between replies.";
       const reasons = {
@@ -325,7 +339,7 @@
       const turns = Array.isArray(state.turns) ? state.turns : [];
       const lastTurn = turns[turns.length - 1];
       const empty = lastTurn && typeof lastTurn.assistant === "string" && !lastTurn.assistant.trim();
-      const prefix = empty ? "No reply text was produced" : "Reply completed";
+      const prefix = empty ? "No reply text was produced" : regenerated ? "Reply regenerated" : "Reply completed";
       const time = Number(generation.elapsed_seconds).toFixed(1);
       const seed = generation.seed === null || generation.seed === undefined ? "random seed" : `seed ${generation.seed}`;
       return `${prefix} · ${time} s · ${generation.input_tokens} input / ${generation.output_tokens} generated tokens · ${reason} · ${seed}`;
@@ -531,6 +545,53 @@
       }
     }
 
+    async function regenerateReply() {
+      if (busy) return;
+      if (!sessionId || !canRegenerate) {
+        setStatus("Generate a new reply before regenerating it. Imported replies need their original generation record.", true);
+        return;
+      }
+      let controls;
+      try {
+        controls = settings();
+        if (controls.temperature === 0) {
+          throw new Error("Choose a temperature above 0 before regenerating. Greedy decoding ignores the seed.");
+        }
+      } catch (error) {
+        setStatus(error.message, true);
+        return;
+      }
+      setBusy(true);
+      setStatus("Preparing the last input prompt with the next seed…");
+      const body = { session_id: sessionId, settings: controls };
+      let previewShown = false;
+      try {
+        const preview = await request("/api/regenerate-preview", body);
+        applyState(preview);
+        previewShown = true;
+        const nextSeed = preview.settings && preview.settings.seed;
+        const seedNote = nextSeed === null || nextSeed === undefined ? "the next seed" : `seed ${nextSeed}`;
+        setStatus(`Regenerating the last reply with ${seedNote}… CPU generation may take a while.`);
+        const state = await request("/api/regenerate", body);
+        applyState(state);
+        applySeed(state.settings);
+        setStatus(generationStatus(state, true));
+      } catch (error) {
+        let restoreFailed = false;
+        if (previewShown) {
+          try {
+            const state = await request(`/api/state?session_id=${encodeURIComponent(sessionId)}`);
+            applyState(state);
+          } catch (_) { restoreFailed = true; }
+        }
+        const note = restoreFailed ? " The displayed context is still the pending input; the server could not restore its state." : "";
+        setStatus(`Regeneration failed: ${error.message}${note}`, true);
+      } finally {
+        setBusy(false);
+        elements.message.focus();
+      }
+    }
+
     elements.composer.addEventListener("submit", (event) => {
       event.preventDefault();
       void sendMessage();
@@ -542,6 +603,7 @@
       }
     });
     elements.newChat.addEventListener("click", () => { void newChat(); });
+    elements.regenerate.addEventListener("click", () => { void regenerateReply(); });
     elements.importChat.addEventListener("click", () => {
       if (busy) return;
       elements.importFile.value = "";

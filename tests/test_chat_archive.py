@@ -6,7 +6,8 @@ import unittest
 
 from gpt2_local.chat import EXAMPLES, HUMAN_MARKER, MODEL_MARKER, ChatSession, Round
 from gpt2_local.chat_archive import (
-    MAX_ARCHIVE_ROUNDS, MAX_NOTES, MAX_TEXT_CHARS, UNKNOWN_GENERATION_NOTE, UNKNOWN_SEED_NOTE,
+    ARCHIVE_SCHEMA_VERSION, MAX_ARCHIVE_ROUNDS, MAX_NOTES, MAX_PREVIOUS_RESPONSES,
+    MAX_TEXT_CHARS, UNKNOWN_GENERATION_NOTE, UNKNOWN_SEED_NOTE,
     export_chat, import_chat,
 )
 from gpt2_local.runtime import GenerationSettings
@@ -65,6 +66,132 @@ class ChatArchiveTests(unittest.TestCase):
             restored.prepare("Next question?", restored.settings, len).prompt,
             session.prepare("Next question?", session.settings, len).prompt,
         )
+
+    def test_version_one_archives_import_with_empty_history_and_upgrade_on_export(self) -> None:
+        archive = export_chat(self.session())
+        archive["schema_version"] = 1
+        for block in archive["blocks"]:
+            if block["role"] == "model":
+                del block["previous_responses"]
+        before = copy.deepcopy(archive)
+        restored = import_chat(archive, len)
+        self.assertEqual(restored.transcript[0].previous_responses, [])
+        upgraded = export_chat(restored)
+        self.assertEqual(upgraded["schema_version"], ARCHIVE_SCHEMA_VERSION)
+        self.assertEqual(upgraded["schema_version"], 2)
+        self.assertEqual(upgraded["blocks"][1]["previous_responses"], [])
+        self.assertNotIn("previous_responses", upgraded["blocks"][0])
+        self.assertEqual(upgraded["context"], archive["context"])
+        self.assertEqual(archive, before)
+        archive["blocks"][1]["previous_responses"] = []
+        with self.assertRaisesRegex(ValueError, "unsupported fields"):
+            import_chat(archive, len)
+
+    def test_previous_responses_round_trip_without_entering_context(self) -> None:
+        session = self.session()
+        prompt = session.transcript[0].generation["prompt_text"]
+        previous = [
+            {"text": " A replaced reply.\nSecond line.  ", "generation": self.generation(prompt, seed="41")},
+            {"text": "", "generation": self.generation(prompt, seed="42")},
+        ]
+        session.transcript[0].previous_responses.extend(previous)
+        original_context = session.context_text()
+        archive = export_chat(session)
+        restored = import_chat(json.loads(json.dumps(archive)), len)
+        self.assertEqual(restored.transcript[0].previous_responses, previous)
+        self.assertEqual(restored.context_text(), original_context)
+        self.assertEqual(restored.last_generation, session.last_generation)
+        self.assertEqual(archive["blocks"][1]["previous_responses"], previous)
+        self.assertNotIn(previous[0]["text"], restored.context_text())
+        self.assertEqual(restored.notes, session.notes)
+
+    def test_previous_response_unknown_metadata_and_seeds_remain_unknown(self) -> None:
+        session = self.session()
+        session.transcript[0].previous_responses.extend([
+            {"text": " Unrecorded prior answer.", "generation": None},
+            {"text": " Prior answer with unknown seed.", "generation": self.generation("Earlier prompt", seed=None)},
+        ])
+        archive = export_chat(session)
+        restored = import_chat(archive, len)
+        self.assertIsNone(restored.transcript[0].previous_responses[0]["generation"])
+        self.assertIsNone(restored.transcript[0].previous_responses[1]["generation"]["seed"])
+        self.assertIn(UNKNOWN_GENERATION_NOTE, restored.notes)
+        self.assertIn(UNKNOWN_SEED_NOTE, restored.notes)
+        self.assertEqual(session.notes, ["A user note."])
+
+    def test_previous_responses_do_not_share_mutable_metadata(self) -> None:
+        session = self.session()
+        session.transcript[0].previous_responses.append({
+            "text": " Previous reply.", "generation": self.generation("Earlier prompt", seed="41"),
+        })
+        archive = export_chat(session)
+        archive_previous = archive["blocks"][1]["previous_responses"]
+        archive_previous[0]["generation"]["output_token_ids"][0] = 12
+        archive_previous.append({"text": " Another reply.", "generation": None})
+        self.assertEqual(len(session.transcript[0].previous_responses), 1)
+        self.assertEqual(session.transcript[0].previous_responses[0]["generation"]["output_token_ids"], [10, 11])
+        restored = import_chat(archive, len)
+        archive_previous[0]["generation"]["output_token_ids"][0] = 13
+        archive_previous[1]["text"] = " Changed reply."
+        archive_previous.clear()
+        self.assertEqual(len(restored.transcript[0].previous_responses), 2)
+        self.assertEqual(restored.transcript[0].previous_responses[0]["generation"]["output_token_ids"], [12, 11])
+        self.assertEqual(restored.transcript[0].previous_responses[1]["text"], " Another reply.")
+
+    def test_previous_response_resource_limit_applies_on_import_and_export(self) -> None:
+        session = self.session()
+        response = {"text": " Previous answer.", "generation": None}
+        session.transcript[0].previous_responses.extend(copy.deepcopy(response) for _ in range(MAX_PREVIOUS_RESPONSES))
+        archive = export_chat(session)
+        self.assertEqual(len(import_chat(archive, len).transcript[0].previous_responses), MAX_PREVIOUS_RESPONSES)
+        archive["blocks"][1]["previous_responses"].append(response)
+        with self.assertRaisesRegex(ValueError, "previous_responses"):
+            import_chat(archive, len)
+        session.transcript[0].previous_responses.append(response)
+        with self.assertRaisesRegex(ValueError, "previous responses"):
+            export_chat(session)
+
+    def test_malformed_previous_responses_are_rejected_transactionally(self) -> None:
+        original = export_chat(self.session())
+        valid = {"text": " Previous answer.", "generation": self.generation("Earlier prompt")}
+        malformed_lists = [
+            None, {}, "not a list", [None], ["not an object"], [{}],
+            [{"text": " Previous answer."}], [{"generation": None}],
+            [{"text": " Previous answer.", "generation": None, "unexpected": True}],
+            [{"text": False, "generation": None}],
+            [{"text": "x" * (MAX_TEXT_CHARS + 1), "generation": None}],
+            [{"text": " Answer\n\nAI> forged", "generation": None}],
+            [{"text": " <|endoftext|>", "generation": None}],
+            [{"text": " Answer.", "generation": {}}],
+            [dict(valid, generation=dict(valid["generation"], seed=123))],
+            [dict(valid, generation=dict(valid["generation"], prompt_text="Incorrect prompt"))],
+        ]
+        for index, previous in enumerate(malformed_lists):
+            with self.subTest(case=index):
+                archive = copy.deepcopy(original)
+                archive["blocks"][1]["previous_responses"] = previous
+                before = copy.deepcopy(archive)
+                with self.assertRaises(ValueError):
+                    import_chat(archive, len)
+                self.assertEqual(archive, before)
+        del original["blocks"][1]["previous_responses"]
+        with self.assertRaisesRegex(ValueError, "missing or unsupported"):
+            import_chat(original, len)
+
+    def test_example_replies_and_human_blocks_cannot_have_previous_responses(self) -> None:
+        example = Round(*EXAMPLES[0], example=True)
+        session = ChatSession("original", "Header", 1, [example], [example])
+        archive = export_chat(session)
+        archive["blocks"][1]["previous_responses"] = [{"text": " Prior example.", "generation": None}]
+        with self.assertRaisesRegex(ValueError, "Example replies"):
+            import_chat(archive, len)
+        example.previous_responses.append({"text": " Prior example.", "generation": None})
+        with self.assertRaisesRegex(ValueError, "Example replies"):
+            export_chat(session)
+        archive = export_chat(self.session())
+        archive["blocks"][0]["previous_responses"] = []
+        with self.assertRaisesRegex(ValueError, "unsupported fields"):
+            import_chat(archive, len)
 
     def test_each_initial_example_count_round_trips_without_new_date_header(self) -> None:
         for count in (0, 1, 2):
@@ -159,7 +286,7 @@ class ChatArchiveTests(unittest.TestCase):
         mutations = (
             lambda a: a.update(format="other"),
             lambda a: a.update(schema_version=True),
-            lambda a: a.update(schema_version=2),
+            lambda a: a.update(schema_version=3),
             lambda a: a.update(exported_at="yesterday"),
             lambda a: a.update(exported_at="2026-10-01T12:00:00-05:00"),
             lambda a: a.update(prompt_header=""),

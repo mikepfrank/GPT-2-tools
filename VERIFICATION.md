@@ -378,3 +378,49 @@ explicit overrides, and failure rollback. Python compilation and diff checks
 passed. JavaScript syntax and mocked frontend checks verified seed display
 on creation/import/reply/export, preserving other pending controls, and
 leaving typed controls unchanged on cancellation or failure.
+
+## Last-reply regeneration (2026-10-02)
+
+Implemented in the existing `codex/gpt2-chat` worktree. Regeneration increments
+the active/requested seed, samples the exact recorded input prompt, and
+replaces only the most recent reply after successful inference. Earlier
+candidates retain their text and generation records in version-2 exports.
+Version-1 imports remain supported.
+
+The complete **111-test** model-free suite passed in 4.775 seconds under WSL
+with the development source selected through `PYTHONPATH`. New checks cover
+explicit/blank seeds and maximum-seed wraparound; original prompt reuse after
+eviction and repeated retries; unchanged state during previews; deep-copied
+candidate history; greedy/overflow/eligibility rejection; unrelated saved
+prompt rejection; sampling and token-accounting rollback; generic delimiter
+trimming; HTTP validation and busy requests; and version-1 migration/version-2
+candidate restoration. Python compilation and `git diff --check` passed.
+JavaScript syntax checking and five mocked frontend scenarios passed,
+including full-range seed handling, greedy rejection, rollback, and busy state.
+
+The owner saved their ongoing chat before the server restart. Startup import
+of that version-1 file restored all eight rounds, its exact 856-token context,
+saved header/date, and active seed. No generation test modified that session.
+
+A separate offline live-model chat used the approved header with the current
+October 2 date, zero examples, `Hello, who are you?`, temperature 0.8, and an
+eight-token reply cap. The first reply used seed 42 and a 141-token input,
+sampling eight tokens in 10.6 seconds including cold setup. Clicking the real
+browser's Regenerate button used seed 43 with that identical input, sampling
+eight different token IDs in 2.3 seconds. The transcript still contained one
+human/model round, with the original candidate and all its metadata retained
+as a previous response. The seed control updated to 43, and an unsent draft
+remained unchanged.
+
+Version-2 export/import preserved the exact current context, both candidates'
+metadata, active seed, and regeneration eligibility. Repeating the same input
+in two fresh test sessions with seeds 42 and 43 reproduced each respective
+complete sampled token-ID array and displayed context exactly, in 2.4 and
+2.5 seconds. This verifies replay on the same pinned CPU runtime; it does not
+establish equivalence across runtimes. The raw test archives remain ignored.
+
+An additional browser check set the reply cap to 1,023 before regeneration.
+The app rejected it because the original 141-token prompt leaves at most 883
+reply tokens. The current candidate, seed 43, typed controls, and unsent draft
+were preserved without inference. The owner's restored conversation was left
+open with the new button enabled for their hands-on test.

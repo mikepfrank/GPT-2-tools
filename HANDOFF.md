@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-01**
+Last updated: **2026-10-02**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -15,8 +15,9 @@ temperature-sweep application are complete and verified.
 The first browser-chat increment is developed separately on `codex/gpt2-chat`,
 starting from `b48ff08`. Its local worktree is `.worktrees/gpt2-chat`; the
 original `main` checkout and shared editable WSL installation remain intact.
-This increment is ready for the project owner's hands-on test before adding
-streaming, participant renaming, or in-context commands.
+The project owner has tested basic chat, speaker colors, seed recording, and
+import/export. Last-reply regeneration is the next increment; streaming,
+participant renaming, and in-context commands remain later work.
 
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
@@ -35,7 +36,8 @@ user instructions in `README.md` and exact reproduced measurements in
 - A PowerShell launcher supports one-shot generation and an interactive REPL.
 - A localhost browser chat supports a resident model, the complete visible
   context with speaker colors, Enter/Shift+Enter input, selectable 0/1/2
-  example rounds, and portable JSON transcripts with import/export.
+  example rounds, portable JSON transcripts with import/export, and last-reply
+  regeneration with seed increments and preserved candidate history.
 - A config-driven experiment application keeps the model resident while it
   sweeps temperatures and seeds, then saves canonical JSON and Markdown.
 - The same application has a serendipity mode that selects distinct random
@@ -263,7 +265,7 @@ and Torch RNG are shared. Reloading the browser restores a live session; New
 chat releases its previous session. The context widget colors exact human
 segments blue and model segments red without changing prompt text.
 
-`chat_archive.py` owns version-1 JSON export/import. Archives retain the exact
+`chat_archive.py` exports version-2 JSON and imports versions 1 and 2. Archives retain the exact
 header/date, complete transcript including evicted rounds, active suffix
 position, current controls, example flags, checkpoint/protocol provenance,
 and available per-reply generation metadata. Imports validate the entire file
@@ -277,6 +279,19 @@ turn replay. Legacy imports with active seed null choose a seed for future
 replies in `ChatApplication.import_session`, with an explanatory note. The
 pure archive parser preserves null seeds and historical missing metadata;
 it must not invent provenance for old replies.
+
+Regenerate replaces only the most recent non-example reply, using the exact
+recorded input prompt. The current seed control (or stored seed if blank) is
+incremented by one modulo 2**63 before sampling; current temperature and reply
+limit apply. Temperature zero is rejected because changing the seed cannot
+change greedy decoding. Increasing the cap beyond the original prompt's
+remaining token budget is rejected rather than repacking that prompt. Preview
+and failed inference do not commit changes. The previous candidate's exact
+text and metadata are appended to `previous_responses`; only the replacement
+enters active context. Version-1 files import with empty candidate histories.
+The archive supports up to 1,000 previous candidates per model block; unknown
+historical provenance stays unknown. Do not infer exact replay from the seed
+alone: retain the recorded prompt, settings, token IDs, and pinned runtime.
 
 The bottom Import/Export buttons use file pickers, with a filename/download
 fallback where Save As is unavailable. Import accepts up to 4 MiB; failed
@@ -412,9 +427,8 @@ Good candidates, roughly in priority order:
    repetition/coherence diagnostics across more than one prompt.
 3. Expose top-k, top-p, repetition penalty, and CPU threads through `run.ps1`,
    or add interactive commands for inspecting/changing settings.
-4. Have the project owner test colored browser-chat transcripts and JSON
-   import/export, then consider streaming output and participant-name commands
-   as separate later increments.
+4. Have the project owner test last-reply regeneration, then consider streaming
+   output and participant-name commands as separate later increments.
 5. Run a separate controlled comparison of repetition penalties around `1.05`,
    `1.10`, and `1.20`; do not mix that variable into the temperature pilot.
 6. Benchmark an isolated OpenVINO FP32 backend against the existing baseline,

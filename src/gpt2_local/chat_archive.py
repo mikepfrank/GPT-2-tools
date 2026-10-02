@@ -13,8 +13,9 @@ if TYPE_CHECKING:
     from .chat import ChatSession
 
 ARCHIVE_FORMAT = "gpt2-local-chat"
-ARCHIVE_SCHEMA_VERSION = 1
+ARCHIVE_SCHEMA_VERSION = 2
 MAX_ARCHIVE_ROUNDS = 10000
+MAX_PREVIOUS_RESPONSES = 1000
 MAX_TEXT_CHARS = 65536
 MAX_NOTES = 100
 GENERATION_FIELDS = {
@@ -150,19 +151,36 @@ def _generation(value: object, count_tokens: Callable[[str], int]) -> dict[str, 
     return copy.deepcopy(record)
 
 
+def _previous_responses(value: object, count_tokens: Callable[[str], int]) -> list[dict[str, object]]:
+    if not isinstance(value, list) or len(value) > MAX_PREVIOUS_RESPONSES:
+        raise ValueError(f"previous_responses must be a list of at most {MAX_PREVIOUS_RESPONSES} entries")
+    responses = []
+    for item in value:
+        record = _object(item, "previous response", {"text", "generation"})
+        responses.append({
+            "text": _body(record["text"], "previous response text", human=False),
+            "generation": _generation(record["generation"], count_tokens),
+        })
+    return responses
+
+
 def _add_unknown_notes(notes: list[str], rounds: list) -> list[str]:
     result = list(notes)
-    real = [item for item in rounds if not item.example]
+    generations = []
+    for item in rounds:
+        if not item.example:
+            generations.append(item.generation)
+            generations.extend(response["generation"] for response in item.previous_responses)
     if (
         len(result) < MAX_NOTES
-        and any(item.generation is None for item in real)
+        and any(generation is None for generation in generations)
         and UNKNOWN_GENERATION_NOTE not in result
     ):
         result.append(UNKNOWN_GENERATION_NOTE)
     if any(
-        item.generation is not None and item.generation["temperature"] > 0
-        and item.generation["seed"] is None
-        for item in real
+        generation is not None and generation["temperature"] > 0
+        and generation["seed"] is None
+        for generation in generations
     ) and UNKNOWN_SEED_NOTE not in result and len(result) < MAX_NOTES:
         result.append(UNKNOWN_SEED_NOTE)
     return _notes(result)
@@ -182,10 +200,15 @@ def export_chat(session: ChatSession, settings: GenerationSettings | None = None
         raise ValueError("The retained chat context is not the archived transcript suffix")
     blocks = []
     for item in session.transcript:
+        if len(item.previous_responses) > MAX_PREVIOUS_RESPONSES:
+            raise ValueError(f"A round supports at most {MAX_PREVIOUS_RESPONSES} previous responses")
+        if item.example and item.previous_responses:
+            raise ValueError("Example replies must not have previous responses")
         blocks.extend((
             {"role": "human", "label": "Human", "text": item.human, "example": item.example, "generation": None},
             {"role": "model", "label": "GPT-2", "text": item.assistant, "example": item.example,
-             "generation": copy.deepcopy(item.generation)},
+             "generation": copy.deepcopy(item.generation),
+             "previous_responses": copy.deepcopy(item.previous_responses)},
         ))
     return {
         "format": ARCHIVE_FORMAT,
@@ -212,8 +235,7 @@ def import_chat(data: object, count_tokens: Callable[[str], int]) -> ChatSession
     }, {"notes"})
     if archive["format"] != ARCHIVE_FORMAT:
         raise ValueError("Unsupported chat archive format")
-    if _integer(archive["schema_version"], "schema_version", 1, 1) != ARCHIVE_SCHEMA_VERSION:
-        raise ValueError("Unsupported chat archive schema version")
+    version = _integer(archive["schema_version"], "schema_version", 1, ARCHIVE_SCHEMA_VERSION)
     timestamp = _text(archive["exported_at"], "exported_at", nonempty=True, limit=64)
     try:
         exported_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -247,7 +269,10 @@ def import_chat(data: object, count_tokens: Callable[[str], int]) -> ChatSession
     rounds = []
     for index in range(0, len(blocks), 2):
         human = _object(blocks[index], "human block", {"role", "label", "text", "example", "generation"})
-        model_block = _object(blocks[index + 1], "model block", {"role", "label", "text", "example", "generation"})
+        model_fields = {"role", "label", "text", "example", "generation"}
+        if version == 2:
+            model_fields.add("previous_responses")
+        model_block = _object(blocks[index + 1], "model block", model_fields)
         if human["role"] != "human" or human["label"] != "Human" or human["generation"] is not None:
             raise ValueError("Human blocks must use the Human label and have no generation metadata")
         if model_block["role"] != "model" or model_block["label"] != "GPT-2":
@@ -259,13 +284,17 @@ def import_chat(data: object, count_tokens: Callable[[str], int]) -> ChatSession
         ):
             raise ValueError("Example flags must be paired and match the initial example-round prefix")
         generation = _generation(model_block["generation"], count_tokens)
+        previous = _previous_responses(model_block["previous_responses"], count_tokens) if version == 2 else []
         if expected_example and generation is not None:
             raise ValueError("Example replies must not claim generated-token metadata")
+        if expected_example and previous:
+            raise ValueError("Example replies must not have previous responses")
         rounds.append(Round(
             human=_body(human["text"], "human text", human=True),
             assistant=_body(model_block["text"], "model text", human=False),
             example=expected_example,
             generation=generation,
+            previous_responses=previous,
         ))
     context = _object(archive["context"], "context", {"first_retained_round", "text"})
     first_retained = _integer(context["first_retained_round"], "context.first_retained_round", 0, len(rounds))
