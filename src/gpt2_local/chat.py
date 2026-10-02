@@ -19,7 +19,7 @@ from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner
 
 HUMAN_MARKER = "\n\nHuman>"
 MODEL_MARKER = "\n\nGPT-2>"
-OMISSION_MARKER = "\n\n...\n\n"
+OMISSION_MARKER = "\n\n..."
 MESSAGE_DELIMITER_PATTERN = r"\n\n[^\s>]+>"
 MESSAGE_DELIMITER_RE = re.compile(MESSAGE_DELIMITER_PATTERN)
 EXAMPLES = (
@@ -207,6 +207,10 @@ class ChatSession:
         budget = MODEL_CONTEXT_TOKENS - settings.max_new_tokens
         suffix = HUMAN_MARKER + " " + message + MODEL_MARKER
         header = self.header
+        # Older archives included their own blank line after the ellipsis.
+        # The Human delimiter supplies it, so compact only future new inputs.
+        if header.endswith(OMISSION_MARKER + "\n\n"):
+            header = header[:-2]
         while True:
             if (self.dropped_rounds or len(retained) < len(self.rounds)) and not header.endswith(OMISSION_MARKER):
                 header += OMISSION_MARKER

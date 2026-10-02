@@ -250,15 +250,15 @@ the 1,024-token window, including the examples first. A 120-token reply
 allowance is the default; oversized current messages are rejected without
 changing history. `/api/preview` shows the exact next input before inference,
 and the main scrolling widget then shows the retained input plus visible reply.
-At the first eviction, `prepare` proposes appending literal `\n\n...\n\n`
+At the first eviction, `prepare` proposes appending literal `\n\n...`
 to the header, then repacks with its token overhead included. A successful
 reply commits that header; preview and failed inference leave it unchanged.
 The suffix is appended only once, including when seeded examples are evicted,
 and persists through export/import in the existing `prompt_header` field.
-Legacy archives with dropped rounds and an unmarked header remain byte-exact
-on import and regeneration; the next new message adds the hint. Existing
-message delimiters still contribute their own blank-line prefix after the
-literal header suffix. New chat starts again without the hint.
+Legacy archives remain byte-exact on import and regeneration. The next new
+message adds the hint if missing, or removes the final two newlines from the
+older `\n\n...\n\n` suffix. The Human delimiter supplies exactly one blank
+line after the ellipsis. New chat starts again without the hint.
 
 The runtime's optional literal `stop_sequences` and regex `stop_pattern`
 support match decoded continuation text across token boundaries. The chat

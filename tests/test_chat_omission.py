@@ -98,10 +98,12 @@ class ChatOmissionTests(unittest.TestCase):
         before = copy.deepcopy(session.state(len))
         prepared = session.prepare(message, settings, len)
         preview = session.preview(message, settings, len)
-        self.assertEqual(OMISSION_MARKER, "\n\n...\n\n")
+        self.assertEqual(OMISSION_MARKER, "\n\n...")
         self.assertEqual(prepared.header, session.header + OMISSION_MARKER)
         self.assertEqual(prepared.retained_rounds, [recent])
         self.assertEqual(preview["context_text"], expected)
+        self.assertIn("\n\n...\n\nHuman>", expected)
+        self.assertNotIn("\n\n...\n\n\nHuman>", expected)
         self.assertEqual(preview["context_tokens"], len(expected))
         self.assertEqual(preview["context_blocks"][0], {"role": "context", "text": prepared.header})
         self.assertEqual("".join(block["text"] for block in preview["context_blocks"]), expected)
@@ -205,10 +207,12 @@ class ChatOmissionTests(unittest.TestCase):
         self.assertEqual(session.example_rounds, 1)
         self.assertEqual(session.state(len)["retained_example_rounds"], 0)
 
-    def legacy_archive(self, version: int = 2) -> dict:
+    def legacy_archive(self, version: int = 2, *, marked: bool = False) -> dict:
         old = Round("Omitted historical question?", " Historical answer.")
         recent = Round("Retained historical question?", " Retained answer.")
         header = "Synthetic historical header."
+        if marked:
+            header += "\n\n...\n\n"
         prompt = self.input_text(header, [recent], "Latest legacy question?")
         generation = {
             "input_tokens": len(prompt), "output_tokens": 2, "output_token_ids": [11, 12],
@@ -230,15 +234,15 @@ class ChatOmissionTests(unittest.TestCase):
         return archive
 
     def test_legacy_dropped_import_and_regeneration_keep_the_exact_original_prompt(self) -> None:
-        for version in (1, 2):
-            with self.subTest(version=version):
-                archive = self.legacy_archive(version)
+        for version, marked in ((1, False), (2, False), (1, True), (2, True)):
+            with self.subTest(version=version, marked=marked):
+                archive = self.legacy_archive(version, marked=marked)
                 restored = import_chat(archive, len)
                 original_header = restored.header
                 original_prompt = restored.last_generation["prompt_text"]
                 self.assertEqual(restored.context_text(), archive["context"]["text"])
                 self.assertEqual(restored.dropped_rounds, 1)
-                self.assertNotIn(OMISSION_MARKER, restored.header)
+                self.assertEqual(OMISSION_MARKER in restored.header, marked)
                 preview = restored.regeneration_preview(GenerationSettings(max_new_tokens=60), len)
                 self.assertEqual(preview["context_text"], original_prompt)
                 restored.regenerate(GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
@@ -248,20 +252,22 @@ class ChatOmissionTests(unittest.TestCase):
                 self.assertEqual(restored.dropped_rounds, 1)
 
     def test_first_new_reply_to_legacy_dropped_chat_adds_marker_without_more_eviction(self) -> None:
-        for version in (1, 2):
-            with self.subTest(version=version):
-                restored = import_chat(self.legacy_archive(version), len)
+        for version, marked in ((1, False), (2, False), (1, True), (2, True)):
+            with self.subTest(version=version, marked=marked):
+                restored = import_chat(self.legacy_archive(version, marked=marked), len)
                 original_header = restored.header
                 retained = list(restored.rounds)
                 before = copy.deepcopy(restored.state(len))
-                expected = self.input_text(original_header + OMISSION_MARKER, retained, "Continue?")
+                expected_header = "Synthetic historical header." + OMISSION_MARKER
+                expected = self.input_text(expected_header, retained, "Continue?")
+                self.assertIn("...\n\nHuman>", expected)
                 preview = restored.preview("Continue?", GenerationSettings(max_new_tokens=60), len)
                 self.assertEqual(preview["context_text"], expected)
                 self.assertEqual(preview["dropped_rounds"], 1)
                 self.assertEqual(restored.state(len), before)
                 restored.reply("Continue?", GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
                 self.assertEqual(self.runner.calls[-1][0], expected)
-                self.assertEqual(restored.header, original_header + OMISSION_MARKER)
+                self.assertEqual(restored.header, expected_header)
                 self.assertEqual(restored.dropped_rounds, 1)
                 self.assertEqual(restored.rounds[:-1], retained)
 

@@ -460,3 +460,25 @@ the counter showed one removed round, and the full transcript retained both
 rounds. Export/import preserved the exact marked context and generation
 prompt; regeneration preview reproduced that saved prompt exactly. Raw test
 archives and the owner's conversation remain local and ignored.
+
+## Ellipsis spacing correction (2026-10-02)
+
+The header suffix is now `\n\n...`, leaving the next Human delimiter to
+provide exactly one blank line: `...\n\nHuman>`. A new-message preparation
+also compacts the older `\n\n...\n\n` suffix. Saved contexts and historical
+generation prompts remain unchanged on import and regeneration; only a
+successful new reply commits the compact header.
+
+The existing **125-test** suite passed in 4.477 seconds, with compilation and
+diff checks passing. Existing omission checks now assert the exact boundary
+and cover version-1/version-2 imports both with an unmarked header and with
+the older spaced marker, preserving original regeneration prompts before
+compacting the next new input.
+
+The owner's latest eleven-round archive restored its exact 926-token context
+and all generation/candidate metadata. Live previews verified the compact
+boundary in an 826-token next input and unchanged original regeneration input.
+A separate test chat imported an older marked archive and generated one token
+from a compact 165-token input in 1.6 seconds, using temperature 0.8 and seed
+42. Browser inspection and a screenshot confirmed one blank line after the
+ellipsis. No generation test altered the owner's restored chat.

@@ -91,11 +91,14 @@ clearing the field during a chat continues to use its stored seed. The default r
 allowance is 120 tokens, leaving up to 904 input
 tokens within GPT-2's 1,024-token window. The fixed header is preserved while
 the oldest complete conversation rounds roll out, starting with the examples.
-When the first round rolls out, the app appends `\n\n...\n\n` to the header
+When the first round rolls out, the app appends `\n\n...` to the header
 once as a hint that earlier conversation was omitted. This hint remains for
-the rest of the chat and counts toward the token budget. Saved chats retain
+the rest of the chat and counts toward the token budget. The next message's
+delimiter supplies a single blank line after the ellipsis. Saved chats retain
 it; an older archive that already omitted rounds gains it on its next new
 message, while regeneration continues to replay its original recorded prompt.
+Older archives with extra spacing after the ellipsis are compacted on the next
+new message, while their historical input prompts remain unchanged.
 The page shows how many rounds have rolled out and lets you inspect the exact
 input prompt for the last reply. If a message cannot fit beside the header and
 reply allowance, shorten it or reduce the reply length; the app preserves your
