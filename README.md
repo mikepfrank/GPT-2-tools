@@ -93,10 +93,14 @@ reply allowance, shorten it or reduce the reply length; the app preserves your
 unsent input and existing history.
 
 GPT-2's native end-of-text token, `<|endoftext|>` (50256), ends generation.
-The chat also stops at the first exact `\n\nHuman>` or `\n\nGPT-2>` boundary,
-removing that delimiter from the displayed reply and future context. Ordinary
-blank lines remain allowed inside messages. These two boundary sequences and
-the literal special-token spelling are reserved in human input.
+The chat also stops at the first new-message boundary matching
+`\n\n[^\s>]+>`: a blank line, a nonempty speaker label containing no whitespace
+or `>`, then `>`. This includes `Human>`, `GPT-2>`, and invented participants
+such as `AI>` or `Assistant>`. It detects boundaries across generated-token
+fragments and removes the entire delimiter and everything after it from the
+displayed reply and future context. Ordinary blank lines and inline mentions
+of speaker labels remain allowed. The boundary pattern and the literal
+special-token spelling are reserved in human input.
 The generated-token count includes any sampled stopping tokens; the visible
 context excludes them.
 

@@ -310,6 +310,114 @@ class RuntimeStopSequenceTests(unittest.TestCase):
                         stop_sequences=sequences,
                     )
 
+    def test_regex_stops_fragmented_hallucinated_speaker_labels(self) -> None:
+        for label in ("AI", "Assistant", "assistant", "Mike", "other-AI", "GPT-2"):
+            with self.subTest(label=label):
+                middle = len(label) // 2
+                runner = self._runner(
+                    ("Answer", "\n", "\n", label[:middle], label[middle:], ">", "simulated")
+                )
+                result = runner.generate_result(
+                    "prompt",
+                    GenerationSettings(max_new_tokens=10, temperature=0),
+                    stop_pattern=r"\n\n[^\s>]+>",
+                )
+
+                self.assertEqual(result.text, "Answer")
+                self.assertEqual(result.stop_reason, "stop_sequence")
+                self.assertEqual(result.output_tokens, 6)
+                self.assertEqual(result.output_token_ids, (10, 11, 12, 13, 14, 15))
+                self.assertEqual(runner.model.checks, [False] * 5 + [True])
+
+    def test_regex_and_literal_stops_trim_at_earliest_match(self) -> None:
+        for text in (
+            "Answer\n\nAI> simulated[END]",
+            "Answer[END]\n\nAI> simulated",
+        ):
+            with self.subTest(text=text):
+                runner = self._runner((text, "ignored tail"), honor_stops=False)
+                result = runner.generate_result(
+                    "prompt",
+                    GenerationSettings(max_new_tokens=10, temperature=0),
+                    stop_sequences=("[END]",),
+                    stop_pattern=r"\n\n[^\s>]+>",
+                )
+
+                self.assertEqual(result.text, "Answer")
+                self.assertEqual(result.stop_reason, "stop_sequence")
+                self.assertEqual(result.output_token_ids, (10, 11))
+                self.assertEqual(result.output_tokens, 2)
+
+    def test_regex_allows_blank_lines_inline_labels_and_partial_delimiters(self) -> None:
+        fragments = (
+            "AI> is an inline label.",
+            "\n\n",
+            "A new paragraph.",
+            "\nAI> still only one newline.",
+            "\n\nTwo words> is not a speaker label.",
+            "\n\nAI",
+        )
+        runner = self._runner(fragments)
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_pattern=r"\n\n[^\s>]+>",
+        )
+
+        self.assertEqual(result.text, "".join(fragments))
+        self.assertEqual(result.stop_reason, "max_new_tokens")
+        self.assertFalse(any(runner.model.checks))
+
+    def test_regex_does_not_match_prompt_or_join_across_prompt_boundary(self) -> None:
+        for prompt, continuation in (
+            ("Header\n\nAI> example\n\nGPT-2>", "Answer"),
+            ("Header\n\nA", "I>"),
+        ):
+            with self.subTest(prompt=prompt):
+                runner = self._runner((continuation,))
+                result = runner.generate_result(
+                    prompt,
+                    GenerationSettings(max_new_tokens=10, temperature=0),
+                    include_prompt=True,
+                    stop_pattern=r"\n\n[^\s>]+>",
+                )
+
+                self.assertEqual(result.text, prompt + continuation)
+                self.assertEqual(result.stop_reason, "max_new_tokens")
+                self.assertEqual(runner.model.checks, [False])
+
+    def test_eos_reason_is_preserved_with_regex_stop(self) -> None:
+        runner = self._runner(("Answer",), include_eos=True)
+        result = runner.generate_result(
+            "prompt",
+            GenerationSettings(max_new_tokens=10, temperature=0),
+            stop_pattern=r"\n\n[^\s>]+>",
+        )
+
+        self.assertEqual(result.text, "Answer")
+        self.assertEqual(result.stop_reason, "eos_token")
+        self.assertEqual(result.output_token_ids, (10, 99))
+
+    def test_invalid_or_empty_matching_regex_fails_before_generation(self) -> None:
+        runner = object.__new__(Gpt2Runner)
+        for pattern in ("[", "(", r"\x", "", "a*", r"(?=)", 123):
+            with self.subTest(pattern=pattern):
+                with self.assertRaisesRegex(ValueError, "stop_pattern"):
+                    runner.generate_result(
+                        "prompt",
+                        GenerationSettings(max_new_tokens=10, temperature=0),
+                        stop_pattern=pattern,
+                    )
+
+    def test_zero_width_regex_on_generated_text_is_rejected(self) -> None:
+        runner = self._runner(("Answer",))
+        with self.assertRaisesRegex(ValueError, "zero-width"):
+            runner.generate_result(
+                "prompt",
+                GenerationSettings(max_new_tokens=10, temperature=0),
+                stop_pattern=r"(?=A)",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

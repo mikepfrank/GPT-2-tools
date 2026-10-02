@@ -247,12 +247,15 @@ allowance is the default; oversized current messages are rejected without
 changing history. `/api/preview` shows the exact next input before inference,
 and the main scrolling widget then shows the retained input plus visible reply.
 
-The runtime's optional `stop_sequences` support matches decoded continuation
-text across token boundaries, stops at `\n\nHuman>` or `\n\nGPT-2>`, and
-excludes the boundary from the reply. Native `<|endoftext|>` (50256) also stops
-generation; ordinary blank lines do not. Raw generated-token metadata still
-includes sampled stopping tokens. Default text-completion/experiment behavior
-is unchanged when no stop sequences are supplied.
+The runtime's optional literal `stop_sequences` and regex `stop_pattern`
+support match decoded continuation text across token boundaries. The chat
+uses `\n\n[^\s>]+>` so invented participants such as `AI>` also end the
+reply. It excludes the entire boundary and everything following it from the
+displayed reply and subsequent context, and reserves that same pattern in
+human input. Native `<|endoftext|>` (50256) also stops generation; ordinary
+blank lines do not. Raw generated-token metadata still includes sampled
+stopping tokens. Default completion/experiment behavior is unchanged when no
+custom stops are supplied.
 
 The server uses in-memory sessions and serializes inference because the model
 and Torch RNG are shared. Reloading the browser restores a live session; New
@@ -324,7 +327,8 @@ The following have been reproduced locally:
 - the original nineteen model-free automated tests covering experiment planning,
   serendipity selection and CLI parsing, seed replay, structured results,
   warm-up, overflow rejection, failure, and persistence paths.
-- the expanded 52-test model-free suite, including decoded delimiter stopping,
+- the expanded 61-test model-free suite, including arbitrary-speaker regex
+  stopping and the earlier decoded literal delimiter stopping,
   whole-round rolling context, exact input previews, transactional errors,
   63-bit seed handling, and localhost HTTP requests;
 - live offline browser chats with 0, 1, and 2 example rounds, early delimiter

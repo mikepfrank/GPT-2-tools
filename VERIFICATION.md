@@ -289,3 +289,22 @@ also passed. The HTTP tests use a fake resident runner and do not numerically
 validate the checkpoint.
 A local wheel build also verified that `gpt2_local/web/chat.html` is included;
 the wheel was not installed into the shared environment.
+
+## Arbitrary participant delimiter correction
+
+The initial chat matched only the two configured participant labels. At the
+project owner's clarification, this was broadened to `\n\n[^\s>]+>` so an
+invented participant such as `AI>` also ends generation. The runtime accepts
+an optional regex stop pattern alongside its existing literal stops. Live
+stopping and final trimming use the earliest match in decoded continuation
+text only, and the chat reserves the same pattern in human input. Native EOS
+handling is unchanged.
+
+The complete **61-test** model-free suite passed in 2.334 seconds, with Python
+compilation and `git diff --check` also passing. Added coverage includes
+arbitrary/Unicode speaker labels, markers fragmented across tokens, earliest
+regex/literal matches, prompt exclusion, native EOS with a regex configured,
+invalid/zero-width patterns, human-input rollback, and ordinary blank lines,
+inline labels, one-newline labels, and incomplete boundaries that must remain
+ordinary text. These checks use synthetic generation; they do not claim that
+the real model produced an invented participant in a numerical smoke test.

@@ -4,6 +4,7 @@ import hashlib
 import math
 import os
 import platform
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -204,11 +205,12 @@ class Gpt2Runner:
         *,
         include_prompt: bool = False,
         stop_sequences: tuple[str, ...] = (),
+        stop_pattern: str | None = None,
     ) -> GenerationResult:
         """Generate text, optionally stopping before a decoded continuation marker.
 
-        Stop matching excludes the prompt. Token IDs and counts still describe
-        every sampled token, including tokens that completed a stop sequence.
+        Literal and regex stop matching excludes the prompt. Token IDs and
+        counts still describe every sampled token, including stop markers.
         """
         settings.validate()
         if not prompt:
@@ -218,6 +220,30 @@ class Gpt2Runner:
             for sequence in stop_sequences
         ):
             raise ValueError("stop_sequences must contain non-empty strings")
+        compiled_stop_pattern = None
+        if stop_pattern is not None:
+            if not isinstance(stop_pattern, str):
+                raise ValueError("stop_pattern must be a regex string or None")
+            try:
+                compiled_stop_pattern = re.compile(stop_pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid stop_pattern: {exc}") from exc
+            if compiled_stop_pattern.search("") is not None:
+                raise ValueError("stop_pattern must not match empty text")
+
+        def first_stop_index(text: str) -> int | None:
+            indices = [
+                index
+                for sequence in stop_sequences
+                if (index := text.find(sequence)) >= 0
+            ]
+            if compiled_stop_pattern is not None:
+                match = compiled_stop_pattern.search(text)
+                if match is not None:
+                    if match.start() == match.end():
+                        raise ValueError("stop_pattern must not make zero-width matches")
+                    indices.append(match.start())
+            return min(indices) if indices else None
 
         torch = self._torch
         inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
@@ -254,7 +280,7 @@ class Gpt2Runner:
                 top_p=settings.top_p,
             )
 
-        if stop_sequences:
+        if stop_sequences or compiled_stop_pattern is not None:
             from transformers import StoppingCriteria, StoppingCriteriaList
 
             tokenizer = self.tokenizer
@@ -273,7 +299,7 @@ class Gpt2Runner:
                         for row in input_ids
                     ]
                     matches = [
-                        any(sequence in text for sequence in stop_sequences)
+                        first_stop_index(text) is not None
                         for text in continuations
                     ]
                     return torch.tensor(
@@ -311,19 +337,15 @@ class Gpt2Runner:
             and generated_token_ids[-1] == self.tokenizer.eos_token_id
         )
         stop_reason = "eos_token" if stopped_on_eos else "max_new_tokens"
-        if stop_sequences:
+        if stop_sequences or compiled_stop_pattern is not None:
             text = self.tokenizer.decode(
                 generated,
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False,
             )
-            stop_indices = [
-                index
-                for sequence in stop_sequences
-                if (index := text.find(sequence)) >= 0
-            ]
-            if stop_indices:
-                text = text[:min(stop_indices)]
+            stop_index = first_stop_index(text)
+            if stop_index is not None:
+                text = text[:stop_index]
                 stop_reason = "stop_sequence"
             if include_prompt:
                 text = self.tokenizer.decode(

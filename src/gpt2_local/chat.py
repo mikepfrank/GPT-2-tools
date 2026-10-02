@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import threading
@@ -17,7 +18,8 @@ from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner
 
 HUMAN_MARKER = "\n\nHuman>"
 MODEL_MARKER = "\n\nGPT-2>"
-STOP_SEQUENCES = (HUMAN_MARKER, MODEL_MARKER)
+MESSAGE_DELIMITER_PATTERN = r"\n\n[^\s>]+>"
+MESSAGE_DELIMITER_RE = re.compile(MESSAGE_DELIMITER_PATTERN)
 EXAMPLES = (
     (
         "Hello, who are you?",
@@ -69,8 +71,8 @@ class PreparedInput:
 
 
 def _trim_reply(text: str) -> str:
-    positions = [position for marker in STOP_SEQUENCES if (position := text.find(marker)) >= 0]
-    return text[: min(positions)] if positions else text
+    match = MESSAGE_DELIMITER_RE.search(text)
+    return text[: match.start()] if match else text
 
 
 def parse_settings(raw: object) -> GenerationSettings:
@@ -133,8 +135,8 @@ class ChatSession:
         message = message.replace("\r\n", "\n").replace("\r", "\n")
         if not message.strip():
             raise ValueError("Enter a message before sending")
-        if any(marker in message for marker in STOP_SEQUENCES):
-            raise ValueError("A blank line followed by Human> or GPT-2> is reserved for message boundaries")
+        if MESSAGE_DELIMITER_RE.search(message):
+            raise ValueError("A blank line followed by a non-whitespace speaker label and > is reserved for message boundaries")
         if "<|endoftext|>" in message:
             raise ValueError("<|endoftext|> is reserved by the GPT-2 tokenizer")
         settings.validate()
@@ -168,7 +170,7 @@ class ChatSession:
 
     def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
         prepared = self.prepare(message, settings, runner.count_prompt_tokens)
-        result = runner.generate_result(prepared.prompt, settings, stop_sequences=STOP_SEQUENCES)
+        result = runner.generate_result(prepared.prompt, settings, stop_pattern=MESSAGE_DELIMITER_PATTERN)
         if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
             raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
         reply_text = _trim_reply(result.text)
