@@ -107,6 +107,14 @@ def settings_record(settings: GenerationSettings) -> dict[str, object]:
     return record
 
 
+def resolve_seed(settings: GenerationSettings, fallback_seed: int | None = None) -> GenerationSettings:
+    """Use a requested/stored seed, choosing one only when neither exists."""
+    seed = settings.seed if settings.seed is not None else fallback_seed
+    if seed is None:
+        seed = secrets.randbelow(2**63)
+    return replace(settings, seed=seed)
+
+
 @dataclass
 class ChatSession:
     session_id: str
@@ -193,7 +201,7 @@ class ChatSession:
 
     def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
         prepared = self.prepare(message, settings, runner.count_prompt_tokens)
-        effective_settings = settings if settings.seed is not None else replace(settings, seed=secrets.randbelow(2**63))
+        effective_settings = resolve_seed(settings, self.settings.seed)
         result = runner.generate_result(prepared.prompt, effective_settings, stop_pattern=MESSAGE_DELIMITER_PATTERN)
         if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
             raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
@@ -217,7 +225,7 @@ class ChatSession:
         self.rounds = prepared.retained_rounds + [new_round]
         self.transcript.append(new_round)
         self.last_generation = generation
-        self.settings = settings
+        self.settings = effective_settings
 
 
 class ChatApplication:
@@ -242,6 +250,7 @@ class ChatApplication:
             raise ValueError("Previous session identifier must be text")
         settings = settings if settings is not None else GenerationSettings(max_new_tokens=120)
         settings.validate()
+        settings = resolve_seed(settings)
         examples = [Round(human, assistant, example=True) for human, assistant in EXAMPLES[:example_rounds]]
         session = ChatSession(secrets.token_urlsafe(24), prompt_header(chat_date), example_rounds, list(examples), list(examples), settings=settings)
         self.sessions[session.session_id] = session
@@ -250,11 +259,18 @@ class ChatApplication:
         return session
 
     def import_session(self, document: object, previous_session_id: object = None) -> ChatSession:
-        from .chat_archive import import_chat
+        from .chat_archive import MAX_NOTES, import_chat
 
         if previous_session_id is not None and not isinstance(previous_session_id, str):
             raise ValueError("Previous session identifier must be text")
         session = import_chat(document, self.runner.count_prompt_tokens)
+        if session.settings.seed is None:
+            session.settings = resolve_seed(session.settings)
+            if len(session.notes) < MAX_NOTES:
+                session.notes.append(
+                    "This archive had no active seed. A new seed was selected for future replies; "
+                    "historical seeds remain as recorded."
+                )
         # Full validation precedes replacing any existing session.
         self.sessions[session.session_id] = session
         if previous_session_id is not None:
@@ -360,6 +376,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
                 session = app.session(body.get("session_id"))
                 export_settings = parse_settings(body["settings"]) if "settings" in body else session.settings
+                export_settings = resolve_seed(export_settings, session.settings.seed)
                 self._json(200, export_chat(session, export_settings))
                 session.settings = export_settings
                 return

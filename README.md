@@ -85,8 +85,9 @@ Examples are authored prompt material, not measured model outputs. The date
 comes from the browser's local calendar when starting the chat.
 
 Temperature, optional seed, and maximum reply length apply to each next
-message. Leaving the seed blank draws and records a fresh seed for each reply;
-the seed field stays blank for the next random reply. The default reply
+message. Leaving the seed blank before **New chat** chooses a random seed once
+and shows it in the field. Replies reuse that seed unless you change it;
+clearing the field during a chat continues to use its stored seed. The default reply
 allowance is 120 tokens, leaving up to 904 input
 tokens within GPT-2's 1,024-token window. The fixed header is preserved while
 the oldest complete conversation rounds roll out, starting with the examples.
@@ -114,10 +115,12 @@ window), the retained-context position, and the current controls. Each new
 model reply also records its actual seed, requested seed, temperature, reply
 allowance, input prompt, sampled token IDs, stop reason, and timing. Seeds are
 decimal strings so full 63-bit values survive browser JSON handling. Missing
-metadata from older conversations remains explicitly unknown.
+metadata from older conversations remains explicitly unknown. When an older
+archive has no active seed, import chooses one for future replies; it does not
+recover or change the historical seeds.
 
 Import reconstructs the original context and restores the controls, including
-the example count and random/fixed seed mode. It preserves the saved header's
+the example count and the saved active seed. It preserves the saved header's
 date and accepts this app's version-1 JSON files up to 4 MiB. A failed import
 preserves the existing chat and unsent draft. Import opens a file picker;
 export uses Save As where supported, with a filename prompt and browser

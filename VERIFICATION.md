@@ -351,3 +351,30 @@ suffix round trips, 0/1/2 examples, full-range seeds, unknown historical
 metadata, validation and rollback, large-history imports, request limits,
 busy transfers, and note-count boundaries across repeated imports. Python
 compilation and `git diff --check` passed as well.
+
+## Seed chosen at chat initialization
+
+At the project owner's correction, a blank seed now selects one random
+63-bit value when New chat starts. It is stored, displayed, and exported
+before any model reply. Blank reply/export controls reuse the stored value;
+explicit changes remain supported. The runtime reseeds before each reply
+with that active seed, so a turn can be replayed independently. This replaces
+the preceding increment's per-reply seed selection.
+
+Application imports of older files with active seed null select a seed for
+future replies and add an explanatory note. The archive parser remains
+lossless, and unknown historical generation metadata stays null. Restoring
+the user's chat preserved its exact 425-token context and all three rounds;
+the newly chosen future seed appeared in the browser control. A separate
+live HTTP check verified seed recording before generation, blank-export
+reuse, and import continuity without generating any additional model text.
+The prior exported conversation was preserved, and a separate ignored local
+backup includes the active future seed.
+
+All **86 model-free tests** passed in 3.786 seconds. Added coverage checks
+selection once at initialization, reuse over multiple replies/exports,
+separate chat initialization, legacy import without fabricated provenance,
+explicit overrides, and failure rollback. Python compilation and diff checks
+passed. JavaScript syntax and mocked frontend checks verified seed display
+on creation/import/reply/export, preserving other pending controls, and
+leaving typed controls unchanged on cancellation or failure.

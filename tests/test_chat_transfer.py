@@ -16,7 +16,7 @@ from gpt2_local.chat import (
     ChatSession,
     Round,
 )
-from gpt2_local.chat_archive import UNKNOWN_GENERATION_NOTE
+from gpt2_local.chat_archive import UNKNOWN_GENERATION_NOTE, export_chat
 from gpt2_local.runtime import GenerationResult, GenerationSettings
 
 
@@ -100,7 +100,7 @@ class ChatTransferIntegrationTests(unittest.TestCase):
             rounds=list(transcript[2:]),
             transcript=list(transcript),
             dropped_rounds=2,
-            settings=GenerationSettings(max_new_tokens=80, temperature=0.7),
+            settings=GenerationSettings(max_new_tokens=80, temperature=0.7, seed=123),
             notes=["This synthetic historical fixture has no generation measurements.", UNKNOWN_GENERATION_NOTE],
         )
         self.app.sessions[session.session_id] = session
@@ -208,35 +208,89 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         self.assertEqual(self.state(session), initial)
         self.assertEqual(self.runner.calls, [])
 
-    def test_unset_seed_is_chosen_before_sampling_recorded_and_keeps_random_controls(self) -> None:
+    def test_blank_initial_seed_is_chosen_once_and_reused_by_replies_and_exports(self) -> None:
         for temperature in (0, 0.8):
             with self.subTest(temperature=temperature):
-                session = self.app.new_session(0, "2026-10-01")
                 seed = 2**63 - 1
                 with mock.patch("gpt2_local.chat.secrets.randbelow", return_value=seed) as choose:
-                    status, state = self.request("POST", "/api/message", {"session_id": session.session_id, "message": "Synthetic question?", "settings": {"temperature": temperature, "max_new_tokens": 40, "seed": None}})
+                    controls = {"temperature": temperature, "max_new_tokens": 40, "seed": None}
+                    status, initial = self.request("POST", "/api/new", {"example_rounds": 0, "date": "2026-10-01", "settings": controls})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(initial["settings"]["seed"], str(seed))
+                    self.assertIsNone(initial["last_generation"])
+                    self.assertEqual(initial["turns"], [])
+                    initial_archive = self.export(initial["session_id"], controls)
+                    self.assertEqual(initial_archive["settings"]["seed"], str(seed))
+                    for message in ("First synthetic question?", "Second synthetic question?"):
+                        status, state = self.request("POST", "/api/message", {"session_id": initial["session_id"], "message": message, "settings": controls})
+                        self.assertEqual(status, 200)
+                        prompt, effective, stop_pattern = self.runner.calls[-1]
+                        self.assertEqual(effective.seed, seed)
+                        self.assertEqual(effective.temperature, temperature)
+                        self.assertEqual(stop_pattern, MESSAGE_DELIMITER_PATTERN)
+                        generation = state["last_generation"]
+                        self.assertEqual(generation["seed"], str(seed))
+                        self.assertIsNone(generation["requested_seed"])
+                        self.assertEqual(state["settings"]["seed"], str(seed))
+                        self.assertEqual(generation["prompt_text"], prompt)
+                        self.assertEqual(generation["output_token_ids"], [42])
+                        self.assertEqual(state["turns"][-1]["generation"], generation)
+                        archive = self.export(initial["session_id"], controls)
+                        self.assertEqual(archive["blocks"][-1]["generation"], generation)
+                        self.assertEqual(archive["settings"]["seed"], str(seed))
+                    choose.assert_called_once_with(2**63)
+
+    def test_each_new_chat_with_blank_seed_gets_its_own_recorded_seed(self) -> None:
+        with mock.patch("gpt2_local.chat.secrets.randbelow", side_effect=[123, 456]) as choose:
+            first = self.app.new_session(0, "2026-10-01")
+            second = self.app.new_session(0, "2026-10-01")
+        self.assertEqual(first.settings.seed, 123)
+        self.assertEqual(second.settings.seed, 456)
+        self.assertEqual(choose.call_args_list, [mock.call(2**63), mock.call(2**63)])
+        self.assertEqual(self.runner.calls, [])
+
+    def test_legacy_import_chooses_only_future_seed_and_keeps_historical_metadata_unknown(self) -> None:
+        session = self.fixture()
+        session.settings = GenerationSettings(max_new_tokens=80, temperature=0.7)
+        archive = export_chat(session)
+        original = copy.deepcopy(archive)
+        with mock.patch("gpt2_local.chat.secrets.randbelow", return_value=789) as choose:
+            status, imported = self.request("POST", "/api/import", {"chat": archive, "previous_session_id": session.session_id})
+            self.assertEqual(status, 200)
+            self.assertEqual(imported["settings"]["seed"], "789")
+            self.assertEqual(imported["context_text"], original["context"]["text"])
+            self.assertEqual(imported["turns"], [item.record() for item in session.transcript])
+            self.assertIsNone(imported["last_generation"])
+            self.assertTrue(all(item["generation"] is None for item in imported["turns"]))
+            self.assertIn(UNKNOWN_GENERATION_NOTE, imported["notes"])
+            self.assertGreater(len(imported["notes"]), len(original["notes"]))
+            restored_archive = self.export(imported["session_id"], {"temperature": 0.7, "max_new_tokens": 80, "seed": None})
+            self.assertEqual(restored_archive["settings"]["seed"], "789")
+            self.assertEqual(restored_archive["blocks"], original["blocks"])
+            status, resumed = self.request("POST", "/api/message", {"session_id": imported["session_id"], "message": "A new synthetic question?", "settings": {"temperature": 0.7, "max_new_tokens": 80, "seed": None}})
+            self.assertEqual(status, 200)
+            self.assertEqual(resumed["last_generation"]["seed"], "789")
+            self.assertTrue(all(item["generation"] is None for item in resumed["turns"][:-1]))
+            choose.assert_called_once_with(2**63)
+        self.assertEqual(archive, original)
+
+    def test_direct_legacy_session_resolves_seed_once_on_first_successful_reply(self) -> None:
+        session = self.fixture()
+        session.settings = GenerationSettings(max_new_tokens=80, temperature=0.7)
+        with mock.patch("gpt2_local.chat.secrets.randbelow", return_value=456) as choose:
+            for message in ("First synthetic question?", "Second synthetic question?"):
+                status, state = self.request("POST", "/api/message", {"session_id": session.session_id, "message": message, "settings": {"max_new_tokens": 40, "seed": None}})
                 self.assertEqual(status, 200)
-                choose.assert_called_once_with(2**63)
-                prompt, effective, stop_pattern = self.runner.calls[-1]
-                self.assertEqual(effective.seed, seed)
-                self.assertEqual(effective.temperature, temperature)
-                self.assertEqual(stop_pattern, MESSAGE_DELIMITER_PATTERN)
-                generation = state["last_generation"]
-                self.assertEqual(generation["seed"], str(seed))
-                self.assertIsNone(generation["requested_seed"])
-                self.assertIsNone(state["settings"]["seed"])
-                self.assertEqual(generation["prompt_text"], prompt)
-                self.assertEqual(generation["output_token_ids"], [42])
-                self.assertEqual(state["turns"][-1]["generation"], generation)
-                archive = self.export(session.session_id)
-                self.assertEqual(archive["blocks"][-1]["generation"], generation)
-                self.assertIsNone(archive["settings"]["seed"])
+                self.assertEqual(state["settings"]["seed"], "456")
+                self.assertEqual(state["last_generation"]["seed"], "456")
+            choose.assert_called_once_with(2**63)
 
     def test_explicit_63_bit_replay_seed_survives_export_import_and_next_controls(self) -> None:
-        session = self.app.new_session(0, "2026-10-01")
         seed = str(2**63 - 1)
         controls = {"temperature": 0.8, "max_new_tokens": 40, "seed": seed}
         with mock.patch("gpt2_local.chat.secrets.randbelow", side_effect=AssertionError("Explicit seeds must not be replaced")):
+            session = self.app.new_session(0, "2026-10-01", settings=GenerationSettings(max_new_tokens=40, seed=0))
+            self.assertEqual(session.settings.seed, 0)
             status, generated = self.request("POST", "/api/message", {"session_id": session.session_id, "message": "First synthetic question?", "settings": controls})
             self.assertEqual(status, 200)
             archive = self.export(session.session_id)
@@ -258,12 +312,14 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         session.settings = GenerationSettings(max_new_tokens=80, temperature=0.7, seed=123)
         before = self.state(session)
         self.runner.failure = RuntimeError("synthetic generation failure")
-        with mock.patch("gpt2_local.chat.secrets.randbelow", return_value=456):
-            status, error = self.request("POST", "/api/message", {"session_id": session.session_id, "message": "Unsent question?", "settings": {"temperature": 0.2, "max_new_tokens": 30, "seed": None}})
-        self.assertEqual(status, 500)
-        self.assertIn("preserved", error["error"])
-        self.assertEqual(self.runner.calls[-1][1].seed, 456)
-        self.assertEqual(self.state(session), before)
+        with mock.patch("gpt2_local.chat.secrets.randbelow", side_effect=AssertionError("A saved chat seed must be reused")):
+            for requested, effective in ((None, 123), ("456", 456)):
+                with self.subTest(requested_seed=requested):
+                    status, error = self.request("POST", "/api/message", {"session_id": session.session_id, "message": "Unsent question?", "settings": {"temperature": 0.2, "max_new_tokens": 30, "seed": requested}})
+                    self.assertEqual(status, 500)
+                    self.assertIn("preserved", error["error"])
+                    self.assertEqual(self.runner.calls[-1][1].seed, effective)
+                    self.assertEqual(self.state(session), before)
 
     def test_import_accepts_large_full_history_above_normal_request_limit(self) -> None:
         session = self.fixture()

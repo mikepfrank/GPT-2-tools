@@ -136,7 +136,7 @@
         </select>
       </div>
       <button id="new-chat" type="button">New chat</button>
-      <p class="control-note">Temperature 0 uses greedy decoding. Example rounds are applied when you choose New chat.</p>
+      <p class="control-note">Leave Seed blank before New chat to choose a seed; it is shown and reused for each reply. Temperature 0 uses greedy decoding and ignores the seed. Example rounds are applied when you choose New chat.</p>
     </section>
 
     <section class="panel" aria-labelledby="context-title">
@@ -273,6 +273,10 @@
       elements.context.replaceChildren(fragment);
     }
 
+    function applySeed(settings) {
+      if (settings) elements.seed.value = settings.seed === null ? "" : String(settings.seed);
+    }
+
     function applyState(state, updateControls = false) {
       if (!state || typeof state.session_id !== "string" || typeof state.context_text !== "string") {
         throw new Error("The local server returned an incomplete chat state.");
@@ -290,7 +294,7 @@
         if (state.settings) {
           elements.temperature.value = String(state.settings.temperature);
           elements.replyLimit.value = String(state.settings.max_new_tokens);
-          elements.seed.value = state.settings.seed === null ? "" : String(state.settings.seed);
+          applySeed(state.settings);
         }
       }
       const generation = state.last_generation;
@@ -472,6 +476,7 @@
           setTimeout(() => URL.revokeObjectURL(url), 1000);
           setStatus(`Download started for ${filename}. Check your browser's downloads.`);
         }
+        applySeed(chat.settings);
       } catch (error) {
         setStatus(`Export failed: ${error.message}`, true);
       } finally {
@@ -507,6 +512,7 @@
         setStatus(`Generating a reply… ${controls.max_new_tokens} reply tokens reserved. CPU generation may take a while.`);
         const state = await request("/api/message", body);
         applyState(state);
+        applySeed(state.settings);
         elements.message.value = "";
         setStatus(generationStatus(state));
       } catch (error) {

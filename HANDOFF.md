@@ -269,9 +269,14 @@ position, current controls, example flags, checkpoint/protocol provenance,
 and available per-reply generation metadata. Imports validate the entire file
 before replacing a session, recreate the saved active context, and restore
 controls. Seed values remain decimal strings across the browser boundary.
-Blank seeds now select and record an OS-random 63-bit seed for each reply;
-requested seed null keeps the next reply in random mode. Historical missing
-metadata stays null, with archive notes explaining the limitation.
+Blank seeds select and record one OS-random 63-bit seed when New chat starts.
+The returned controls display that concrete seed; replies reuse it unless the
+user supplies a different one. A blank message/export seed falls back to the
+stored active seed. The runtime reseeds before each reply, allowing individual
+turn replay. Legacy imports with active seed null choose a seed for future
+replies in `ChatApplication.import_session`, with an explanatory note. The
+pure archive parser preserves null seeds and historical missing metadata;
+it must not invent provenance for old replies.
 
 The bottom Import/Export buttons use file pickers, with a filename/download
 fallback where Save As is unavailable. Import accepts up to 4 MiB; failed
