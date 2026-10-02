@@ -12,7 +12,7 @@ The project is a working, CPU-first local deployment of OpenAI's original
 GPT-2 XL learned checkpoint. The baseline runner and the first reproducible
 temperature-sweep application are complete and verified.
 
-The first browser-chat increment is developed separately on `codex/gpt2-chat`,
+Browser-chat development lives separately on `codex/gpt2-chat`,
 starting from `b48ff08`. Its local worktree is `.worktrees/gpt2-chat`; the
 original `main` checkout and shared editable WSL installation remain intact.
 The project owner has tested basic chat, speaker colors, seed recording,
@@ -22,6 +22,8 @@ remain later work.
 
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
+- Chat development branch: `codex/gpt2-chat`; the latest implementation change
+  is `f34384e` (single blank line after the ellipsis).
 - Installation and user-facing commands: [`README.md`](README.md)
 - Reproduced environment and test evidence:
   [`VERIFICATION.md`](VERIFICATION.md)
@@ -29,6 +31,15 @@ remain later work.
 Keep this file focused on durable decisions and continuation context. Put
 user instructions in `README.md` and exact reproduced measurements in
 `VERIFICATION.md` rather than copying them here.
+
+For a new side project, create a fresh worktree and a new development branch
+from the **tip of `codex/gpt2-chat`**, specifying that starting ref explicitly.
+Keep this session's `.worktrees/gpt2-chat` checkout and live server available.
+If the side project launches another chat server, use a different port, such
+as `./chat.ps1 -Offline -Port 8899`. Select the new checkout's source through
+`PYTHONPATH`, as the chat launcher does, and keep the shared WSL editable
+installation unchanged. Dependency/backend experiments should use a separate
+environment. Git worktrees do not copy ignored local transcripts or caches.
 
 ## Current state
 
@@ -51,8 +62,9 @@ user instructions in `README.md` and exact reproduced measurements in
   fully hermetic because Ubuntu packages and pip build tooling can change.
 - The local `main` branch tracks `origin/main`. The initial project snapshot
   was commit `2a8bc6d` (`Initial GPT-2 XL local runner`).
-- This public repository does not contain model weights, generated output,
-  credentials, virtual environments, or machine-local caches.
+- Model weights, raw generated output, private chat transcripts, credentials,
+  virtual environments, and machine-local caches remain outside tracked files.
+  Four reviewed experiment `report.md` files are explicit tracked exceptions.
 
 ## Core decisions and invariants
 
@@ -140,6 +152,9 @@ The dated disk-usage measurements are recorded in `VERIFICATION.md`.
 - [`src/gpt2_local/chat.py`](src/gpt2_local/chat.py) owns the approved chat
   header/examples, whole-round context packing, in-memory sessions, exact
   input previews, and a loopback-only standard-library HTTP server.
+- [`src/gpt2_local/chat_archive.py`](src/gpt2_local/chat_archive.py) validates
+  portable archives and preserves complete transcripts, retained context,
+  per-reply generation metadata, and previous regeneration candidates.
 - [`src/gpt2_local/web/chat.html`](src/gpt2_local/web/chat.html) implements the
   browser interface without frontend dependencies.
 - [`experiments/identity-context.json`](experiments/identity-context.json)
@@ -152,8 +167,9 @@ The dated disk-usage measurements are recorded in `VERIFICATION.md`.
 - [`src/gpt2_local/runtime.py`](src/gpt2_local/runtime.py) owns model identity,
   downloading, checksum verification, FP32 loading, prompt truncation,
   structured generation results, validation, and timing.
-- [`tests/`](tests) contains model-free `unittest` coverage for the experiment
-  and the original text-only generation API.
+- [`tests/`](tests) contains model-free `unittest` coverage for the experiment,
+  original generation API, chat packing/stopping, HTTP and transfer handling,
+  archive compatibility, seed capture, regeneration, and omission hints.
 - [`pyproject.toml`](pyproject.toml) defines the package and `gpt2-xl` entry
   point.
 - [`requirements.lock.txt`](requirements.lock.txt) records the exact verified
@@ -309,10 +325,17 @@ imports preserve the current chat and draft. `chat.ps1 -RestoreChat PATH`
 restores an archive at startup and prints a session URL that takes precedence
 over the browser's previous session. Native Save As must be invoked before
 network waits to retain the click's user activation. Keep a live conversation
-exported before restarting its server. Raw user transcripts and smoke-test
-artifacts remain under ignored `outputs/chats/`; do not publish them as part
-of routine code pushes. Streaming and participant-name commands are still
-later increments.
+exported before restarting its server. The owner's detailed test transcripts
+are in the primary checkout's ignored `outputs` folder:
+`C:\Users\MikeFrank\Documents\=== FILES ===\-- AI --\GPT-2\outputs`.
+Those chat JSON files must remain untracked and must not be pushed. Local
+smoke-test archives remain under the development worktree's ignored
+`outputs/chats/`. The four reviewed experiment reports are the only current
+tracked output artifacts. Streaming, automatic duplicate rejection,
+participant-name commands, and adjustable repetition/presence penalties
+remain future work; the current chat fixes top-k at 50, top-p at 0.95, and
+repetition penalty at 1.0. Adding such controls also requires updating archive
+validation and recording their values for reproducibility.
 
 ## Performance notes
 
@@ -378,17 +401,27 @@ The following have been reproduced locally:
 - the original nineteen model-free automated tests covering experiment planning,
   serendipity selection and CLI parsing, seed replay, structured results,
   warm-up, overflow rejection, failure, and persistence paths.
-- the expanded 61-test model-free suite, including arbitrary-speaker regex
-  stopping and the earlier decoded literal delimiter stopping,
-  whole-round rolling context, exact input previews, transactional errors,
-  63-bit seed handling, and localhost HTTP requests;
+- the current **125-test** model-free suite, including arbitrary-speaker regex
+  stopping, whole-round context packing, exact previews, transactional errors,
+  63-bit seed capture, HTTP/transfer handling, version-1/version-2 archives,
+  regeneration candidate history, and omission-marker spacing/migration;
 - live offline browser chats with 0, 1, and 2 example rounds, early delimiter
   stopping and reply-limit stopping, multiline keyboard input, overlong-input
-  preservation, and browser reload recovery.
+  preservation, and browser reload recovery;
+- native Save As export completed by the owner, browser import and startup
+  restoration preserving exact contexts and generation metadata;
+- real-model regeneration with seed 42 advancing to 43, and fresh-session
+  replay reproducing each candidate's complete token-ID array on the pinned
+  CPU runtime;
+- live omission-marker packing, archive round trips, exact regeneration
+  previews, and the single-blank-line spacing correction.
 
 Preserve the distinction between reproduced verification and untested
 expectations. The tests deliberately do not load or numerically validate the
-6 GB model; the full offline sweeps are the integration evidence for that path.
+6 GB model; the offline sweeps and live chat smoke/replay checks provide model
+integration evidence. The last complete suite passed on October 2, 2026;
+exact measurements and the distinction between synthetic and real-model
+checks are recorded in `VERIFICATION.md`.
 
 ## Known limitations and caution points
 
@@ -437,8 +470,9 @@ Good candidates, roughly in priority order:
    repetition/coherence diagnostics across more than one prompt.
 3. Expose top-k, top-p, repetition penalty, and CPU threads through `run.ps1`,
    or add interactive commands for inspecting/changing settings.
-4. Have the project owner test last-reply regeneration, then consider streaming
-   output and participant-name commands as separate later increments.
+4. Explore optional repetition controls, duplicate-response rejection,
+   streaming output, or participant-name commands as separate chat increments.
+   Last-reply regeneration is already implemented and owner-tested.
 5. Run a separate controlled comparison of repetition penalties around `1.05`,
    `1.10`, and `1.20`; do not mix that variable into the temperature pilot.
 6. Benchmark an isolated OpenVINO FP32 backend against the existing baseline,
