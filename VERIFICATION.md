@@ -1,7 +1,9 @@
 # Verification record
 
-Verified locally through **2026-10-02**. Public-service preparation has been
-checked locally; Amazon Linux inference remains unverified.
+Verified through **2026-10-03**, including the local tools, public-service
+preparation, isolated Amazon Linux runtime installation, and short real-model
+throughput trials and private backend API integration. Persistent public-service
+deployment, the public endpoint, and a real-model browser test remain pending.
 
 ## Host
 
@@ -523,15 +525,165 @@ the non-dry benchmark to decline with exit code 2 before model loading,
 using the system Python that has no Torch installation. These checks verify
 planning and the guard, not inference or numeric performance.
 
-Read-only SSH inspection found Amazon Linux 2023.9, x86_64, two vCPUs
+The October 2 read-only SSH inspection found Amazon Linux 2023.9, x86_64, two vCPUs
 (Xeon Platinum 8175M, reporting one core/two threads), 7.6 GiB total RAM,
 about 4.8 GiB available RAM, no swap, and about 100 GiB free disk. Existing
 Astra, Arcturus, Caddy, and other user processes share the host. System Python
 is 3.9.25; namespaced Python 3.11.14 with ensurepip is installed. These are
-dated host observations. No package installation, model download/load,
-service change, proxy edit, or throughput trial was performed on the host.
+dated observations of the original host. At that inspection, no package
+installation, model download/load, service change, proxy edit, or throughput
+trial had been performed. The original available RAM failed the unchanged
+FP32 model's capacity requirement; the owner subsequently upgraded the host.
 
-The deployment templates and Amazon Linux setup script are prepared, but their
-installation has not been reproduced. The shared host currently lacks the
-headroom for the unchanged CPU FP32 model and its generation working memory;
-the deployment and server TPS benchmark await the owner's capacity decision.
+## Amazon Linux installation and short inference trials (2026-10-03)
+
+After the owner's upgrade and authorization, the host reported Amazon Linux
+2023.9 on x86_64, kernel `6.1.158-180.294.amzn2023.x86_64`, and an Intel Xeon
+Platinum 8175M at 2.50 GHz with four vCPUs: two cores and two SMT threads per
+core. Total RAM was **15.42 GiB**, initial available RAM **14.57 GiB**, swap
+absent, and approximately 260 GiB free on the 320 GiB disk. These remain
+dated observations, not a guarantee of later spare capacity.
+
+Source commit `663c413865ab2264cf56d8743f33e8abb1edec7e` was transferred by
+Git bundle and cloned as `gpt-2` into `/home/gpt-2/GPT-2-tools`; its origin
+was set to the project's GitHub repository without pushing. Only namespaced
+Python 3.12 prerequisites were installed with DNF, without an OS upgrade.
+System Python remained **3.9.25**. The isolated environment and cache were:
+
+```text
+Environment  /home/gpt-2/.venvs/gpt2-public
+HF_HOME      /home/gpt-2/.cache/gpt2-public/huggingface
+Python       3.12.12
+PyTorch      2.14.1+cpu
+Transformers 5.18.0
+Tokenizers   0.23.2
+Model        openai-community/gpt2-xl, CPU FP32, 1,557,611,200 parameters
+Revision     15ea56dee5df4983c59b2538573817e1667135e2
+```
+
+`scripts/setup-amazon-linux.sh --download-model` completed. `pip check`
+reported no broken requirements, and the entire **5.99 GiB** safetensors file
+was hashed and matched
+`0f8b28eb05a8075f48b61b6f35332978c74fc7763fa9fb4051a1c30511736a6a`.
+The **157-test Python suite** passed on Amazon Linux in **8.508 seconds**.
+Those automated tests use synthetic runners; the measurements below provide
+separate real-model integration evidence.
+
+Two sequential offline benchmark processes used one resident model each:
+
+```text
+Thread trial   --threads 1 2 4 --samples 1 --max-new-tokens 32
+Context trial  --threads 2 4 --samples 1 --max-new-tokens 32 --near-full-context
+Common         temperature 0, seed 42, top-k 50, top-p 0.95, repetition penalty 1.0
+```
+
+The short-chat prompt had 39 tokens; the near-full-context prompt had exactly
+992, reserving 32 of GPT-2's 1,024 tokens for the continuation. Every sample
+generated all 32 requested tokens, stopped at `max_new_tokens`, and reported
+no input truncation. Each thread count received a separate one-token warm-up.
+The five short-prompt samples had identical greedy output token IDs and text
+hashes; the two near-full samples also matched across two/four threads. This
+is evidence for these recorded samples, not a general claim of equivalence
+across hardware, precision, or arbitrary prompts.
+
+| Trial | Input tokens | Threads | Output tokens | Generation seconds | Output tokens/second | Process CPU, % of four-vCPU host | Process-lifetime peak RSS, GiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Thread | 39 | 1 | 32 | 20.44807 | 1.56494 | 24.95 | 6.240 |
+| Thread | 39 | 2 | 32 | 12.10384 | 2.64379 | 49.85 | 6.240 |
+| Thread | 39 | 4 | 32 | 11.54576 | 2.77158 | 98.25 | 6.240 |
+| Context | 39 | 2 | 32 | 12.46027 | 2.56816 | 49.75 | 6.240 |
+| Context | 992 | 2 | 32 | 30.23434 | 1.05840 | 49.51 | 7.928 |
+| Context | 39 | 4 | 32 | 12.60798 | 2.53808 | 95.78 | 7.928 |
+| Context | 992 | 4 | 32 | 29.64731 | 1.07936 | 98.29 | 7.928 |
+
+Generation TPS includes prompt prefill, decoding, and stopping; it is neither
+time to first token nor isolated decode speed. Model construction wall time
+was **6.33134** and **6.08605 seconds**, including initial runtime imports.
+The first one-token warm-ups separately paid lazy page-in/kernel setup costs
+of **2.41501** and **1.91170 seconds**. Pre-load available RAM was 14.39 and
+14.36 GiB, respectively; both runs passed the unchanged 8 GiB floor without
+override. RSS is a process-lifetime high-water mark, not per-request memory;
+the second trial's four-thread short sample inherited the earlier near-full
+peak. CPU percentages derive from process user/system time normalized across
+four logical CPUs, not a CloudWatch whole-instance observation.
+
+The runs generated **224 measured + 5 warm-up = 229 tokens**: 99 in the first
+process and 130 in the second. Monitoring used one-second `vmstat` samples.
+Excluding each command's initial since-boot average row, the first run's 56
+intervals reported zero steal; the second run's 95 intervals reported up to
+3% steal (0.084% mean). Swap-in/out were zero throughout. These brief trials do not establish steady
+performance after burst-capacity depletion or under concurrent traffic.
+**Two Torch threads are the recommended initial service setting**: four
+threads occupied nearly all available vCPUs for little or no gain, while two
+threads averaged roughly half the host. The service still uses one inference
+worker; request serialization and memory guards remain in place.
+
+The before/after preservation checks found `astra-chess`, `or-chess`, and
+`astra-caddy` still active with unchanged MainPIDs **4149 / 4313 / 4341** and
+unchanged configuration/unit-file hashes. No proxy edit, persistent GPT-2
+web-service installation, or public endpoint was added. The isolated runtime
+and inference trials are complete; a subsequent temporary private API test is
+recorded below. Real-browser testing and persistent service/proxy deployment
+remain next steps.
+
+Exact prompts/token IDs, generated token IDs/text hashes, dependency and source
+provenance, resource snapshots, and UTC timing remain in the ignored files
+`outputs/benchmarks/lightsail-threads-20261003.json` and
+`outputs/benchmarks/lightsail-context-20261003.json`. The installation and test
+logs remain ignored under `outputs/deploy/`. The benchmark records the expected
+checkpoint digest; the actual whole-file verification came from installation.
+Raw JSON, logs, model weights, and caches have not been added to Git.
+
+The copied benchmark JSON files matched their server copies with these SHA-256
+digests:
+
+```text
+lightsail-threads-20261003.json  56704377229882c707f5609eebf6de8ddcefe2d857f3bcfff8e994b226a10b89
+lightsail-context-20261003.json  8ad1805ce9c84dda33aca6e30331e1d687a27c818c7d6fb72e140c04e5e152d6
+```
+
+## Private real-model public-backend integration (2026-10-03)
+
+A temporary systemd unit, `gpt2-public-smoke-20261003`, ran the installed
+public backend as `gpt-2`, with niceness 10, `ProtectSystem=strict`,
+`ProtectHome=read-only`, `MemoryHigh=8704M`, `MemoryMax=9G`,
+`MemorySwapMax=0`, and `RuntimeMaxSec=180`. The service listened only on
+`127.0.0.1:8899`, allowed origin `http://localhost:8899`, and used offline
+inference, two Torch threads, a 32-token reply cap, and the unchanged 8 GiB
+available-memory pre-load floor. No persistent unit was installed or enabled.
+
+The private HTTP client observed ready/idle health, started a zero-example
+chat, obtained its exact preview, submitted **one** generation, and polled
+that job through completion. Export/import preserved the archive exactly
+except for its export timestamp; the source archive was unchanged, a separate
+new chat stayed empty, and final health was ready/idle. The real generation
+used **144 input tokens** and sampled **13 output tokens** before the chat
+boundary stop (`stop_sequence`), in **7.106534691 seconds** (**1.82930 sampled
+tokens/second**). Raw token metadata includes stopping tokens; the delimiter
+was omitted from the visible reply/context. Settings were temperature 0,
+seed 42, and at most 32 reply tokens. The full HTTP client flow took
+**8.05260 seconds**, including polling and transfers; it is not time to first
+token or service startup time.
+
+This was the first generation in that process and recorded
+`cold_start_included=true`; the OS file cache was already warmed by the prior
+trials, so it is not a cold-machine benchmark. The unit later stopped at its
+configured 180-second runtime limit, producing the expected systemd timeout
+result after the API job had already passed. No GPT-2 process or port-8899
+listener remained. Pre-job cgroup memory events were zero; the cgroup was
+already collected at the post-job inspection. This short test therefore does
+**not** validate near-full-context memory, the soft/hard memory limits under
+load, or sustained service operation.
+
+Final preservation checks again found the three existing services active with
+the same MainPIDs. The Astra and Arcturus application roots returned HTTP 200
+when queried with their configured Host names, `astraplayschess.com` and
+`arcturuschess.com`. Their configuration/unit hashes remained unchanged.
+
+The exact API requests/responses, prompt, sampled token IDs, reply hash,
+generation metadata, and checks remain in ignored
+`outputs/deploy/public-api-smoke-20261003.json` (SHA-256
+`7035942230611429e5479447382e8a5a02d1b1006a55460acc81c16d28e15016`).
+This verifies private backend integration with the real model. A real-browser
+SSH-tunnel test, persistent service installation, proxy configuration, and
+public access remain pending.

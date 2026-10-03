@@ -7,29 +7,37 @@ modest beta service; CPU throughput, available RAM, queue capacity, and request
 caps limit its capacity. The benchmark measures the same backend independently
 of the web server.
 
-## Current host and deployment gate
+## Current host and deployment status
 
 The initial read-only inspection on October 2, 2026 found Amazon Linux 2023.9,
 x86_64, two logical CPUs reporting one core/two threads on an Intel Xeon Platinum
 8175M at 2.5 GHz, approximately 7.6 GiB total RAM and 4.8 GiB available, no swap,
-and about 100 GiB free disk. These observations are a snapshot, not a current
-resource guarantee. The host also serves the existing Astra and OpenRouter chess
+and about 100 GiB free disk. That original capacity gate was resolved by the
+owner's upgrade. On October 3 the host reported four vCPUs (two cores with two
+SMT threads each), 15.42 GiB total RAM, initially 14.57 GiB available, no swap,
+and about 260 GiB free on its 320 GiB disk. Both inventories are dated snapshots,
+not current resource guarantees. The host also serves the Astra and OpenRouter chess
 applications and their Caddy proxy; ports 80/443 and loopback 8788/8792 are already
 in use. Preserve their users, services, files, environments, and listeners.
 
-The approximately 6 GiB FP32 checkpoint plus runtime, activations, and up to
-600 MiB of full-window KV tensors does **not** safely fit in the observed
-4.8 GiB available RAM. The public server and benchmark default to requiring
-8 GiB available physical RAM before loading. Resolve the memory plan first,
-such as a larger or separate instance. Installing packages and downloading the
-checkpoint do not establish that inference fits. Swap is not counted as
-available RAM; do not reduce the guard merely to force startup on this shared
-host. The unit's example memory limits also assume that the memory plan has
-been resolved.
+The isolated runtime, checkpoint download/full-file SHA-256 verification,
+`pip check`, 157-test suite, and short offline inference trials completed on
+October 3. Near-full-context process-lifetime peak RSS reached 7.928 GiB.
+Keep the public server and benchmark's 8 GiB available-memory pre-load floor;
+the check also respects cgroup headroom and excludes swap. The larger host
+permitted these trials without lowering the guard. Recheck available capacity
+before later model loads, and avoid a second resident copy during testing.
 
-No Amazon Linux model-load or generation measurements have been reproduced yet.
-The files here are deployment instructions and templates, not evidence that a
-public service is installed or running.
+A temporary loopback public-backend unit also passed one real-model API
+generation, preview, job polling, and exact archive export/import on October 3.
+It ran as `gpt-2` with two threads and a 32-token reply cap, then stopped at its
+configured 180-second runtime limit with no GPT-2 process/listener remaining.
+The persistent GPT-2 web service and proxy route have **not** been installed
+or enabled, and no public endpoint exists yet. Existing chess services and
+Caddy retained their MainPIDs and configuration/unit hashes; application-root
+checks returned HTTP 200 with their configured Host names. The remaining
+steps are private real-browser testing, reviewed persistent service installation,
+and proxy integration.
 
 ## Install an isolated runtime
 
@@ -37,8 +45,8 @@ Use `ssh lightsail` to access the administrator account. Amazon Linux keeps
 `/usr/bin/python3` at its system Python 3.9. Install a separate Python 3.12;
 leave that symlink intact, as required by the
 [Amazon Linux Python documentation](https://docs.aws.amazon.com/linux/al2023/ug/python.html).
-The lock was resolved on Python 3.12; the observed Python 3.11 installation is
-not a substitute for reproducing it.
+The lock was resolved on Python 3.12. The October 3 installation used namespaced
+Python 3.12.12 and left system Python 3.9.25 intact, without an OS upgrade.
 
 ```bash
 # As ec2-user: install only this project's prerequisites, without a full update.
@@ -46,17 +54,24 @@ sudo dnf install -y python3.12 python3.12-pip git
 sudo -iu gpt-2
 ```
 
-Clone the repository as `gpt-2`, using its existing GitHub SSH configuration.
-This work starts on local branch `codex/gpt2-public`, split from chat commit
-`3657a81`; that branch has not yet been published. Once a reviewed deployment
-commit has been published, select it explicitly. A transferred release checkout
-is also possible when its source commit/files are recorded. The local chat
-branch is not itself a public service. The unit assumes this checkout path:
+The current installation and benchmarks used source commit
+`663c413865ab2264cf56d8743f33e8abb1edec7e`, transferred by Git bundle and cloned
+as `gpt-2` into `/home/gpt-2/GPT-2-tools`, with origin set to GitHub. That is
+the existing checkout to inspect/update; later reviewed commits can be moved
+by bundle without changing the benchmark's recorded source revision.
+
+`codex/gpt2-public` has **not been published to GitHub**. Cloning the current
+GitHub `main` will not supply the public service. Until the reviewed public
+branch is published, transfer a Git bundle containing its reviewed commit and
+clone that bundle as `gpt-2`. After publication, GitHub cloning with an explicit
+public-branch/commit selection becomes an alternative. The public branch split
+from chat commit `3657a81`; fresh-host bundle commands are:
 
 ```bash
-git clone git@github.com:mikepfrank/GPT-2-tools.git /home/gpt-2/GPT-2-tools
+git clone /path/to/reviewed-gpt2-public.bundle /home/gpt-2/GPT-2-tools
 cd /home/gpt-2/GPT-2-tools
-# git switch <reviewed-deployment-branch>, then inspect git status and rev-parse HEAD.
+git remote set-url origin git@github.com:mikepfrank/GPT-2-tools.git
+# Inspect git status and rev-parse HEAD against the bundle's reviewed public commit.
 bash scripts/setup-amazon-linux.sh --dry-run
 bash scripts/setup-amazon-linux.sh --download-model
 ```
@@ -69,6 +84,9 @@ installation avoids an accidental source build on the small host. If the
 namespaced Python packages or pinned wheels are unavailable, stop and diagnose;
 do not change the model, precision, dependency lock, or system Python silently.
 System packages and pip itself are not pinned, so this is not a hermetic build.
+The reproduced runtime is Python 3.12.12, PyTorch 2.14.1+cpu, Transformers
+5.18.0, and Tokenizers 0.23.2; exact installation/test evidence is in
+[`VERIFICATION.md`](../VERIFICATION.md).
 
 The optional model download fetches only the needed config/tokenizer files and
 safetensors checkpoint at revision
@@ -97,13 +115,13 @@ benchmarking must not load a second copy of its model. Leave unrelated services
 running and record their activity when interpreting performance.
 
 ```bash
-"$PYTHON" scripts/benchmark-host.py --dry-run --threads 1
+"$PYTHON" scripts/benchmark-host.py --dry-run --threads 2
 # Once the host has sufficient available physical RAM:
-"$PYTHON" scripts/benchmark-host.py --threads 1
+"$PYTHON" scripts/benchmark-host.py --threads 2
 # Optional, separately named short comparison with the same resident model:
-"$PYTHON" scripts/benchmark-host.py --threads 1 2 --samples 1 --max-new-tokens 32
+"$PYTHON" scripts/benchmark-host.py --threads 1 2 4 --samples 1 --max-new-tokens 32
 # Optional context-cost comparison; this adds a substantial prompt prefill:
-"$PYTHON" scripts/benchmark-host.py --threads 1 --samples 1 --near-full-context
+"$PYTHON" scripts/benchmark-host.py --threads 2 --samples 1 --near-full-context
 ```
 
 The default is two warm samples of at most 32 output tokens, greedy decoding,
@@ -129,15 +147,21 @@ including initial runtime imports, is reported separately; the first warm-up
 pays for lazy page-in and initial kernel setup.
 `process_peak_rss_mib` is the Linux process-lifetime maximum resident set,
 converted from KiB to MiB. Process CPU percentages report both one-logical-CPU
-and all-host-logical-CPUs conventions: 100% of one logical CPU is 50% of a
-two-vCPU host. These are process measurements, not the whole-instance CPU
+and all-host-logical-CPUs conventions: 100% of one logical CPU is 25% of the
+upgraded four-vCPU host. These are process measurements, not the whole-instance CPU
 metric shown in AWS. Other applications, steal time, throttling, and cgroup
 limits can alter results.
 
-The laptop's 14-thread measurements cannot be scaled linearly to this host's
-two vCPUs; the CPU, memory bandwidth, SMT topology, and credit state differ.
-Start with one thread and compare two empirically. A numeric Lightsail TPS
-estimate remains unverified until the guarded benchmark can run.
+The October 3 trials measured 1.56494 / 2.64379 / 2.77158 output tokens/second
+with one / two / four threads for a 39-token input and 32-token reply. A second
+process measured 2.56816 / 2.53808 for two / four threads with that short input,
+and 1.05840 / 1.07936 with 992 input tokens and 32 output tokens. Two threads
+used about half the host's CPU; four used approximately 96–98% with little or
+no gain. **Use two Torch threads and one inference worker** on this shared
+host. Full results and timing/memory scope are in
+[`VERIFICATION.md`](../VERIFICATION.md). The laptop's 14-thread results do not
+predict this host's throughput, and these brief trials do not measure steady
+performance after burst-capacity depletion.
 
 For an intentionally isolated experiment, `--allow-low-memory` explicitly
 bypasses the benchmark's pre-load check. It can trigger swapping or OOM kills,
@@ -152,11 +176,11 @@ returns toward the sustainable zone. Monitor CPU utilization and remaining
 burst capacity before/after trials in the dashboard. This is the behavior in
 [AWS's Lightsail burst documentation](https://docs.aws.amazon.com/lightsail/latest/userguide/identifying-instance-burst.html).
 
-AWS lists a 30% averaged baseline for the two-vCPU, 8 GB Lightsail bundle.
-The inspected hardware is consistent with that size, but the account's actual
-bundle and dashboard baseline still need confirmation. One fully occupied
-logical CPU alone would average about 50% on two vCPUs before other workloads;
-it can therefore spend credits even with one inference thread. See the
+The upgraded host has four vCPUs. The brief process measurements averaged
+about 25% / 50% / 96–98% of that host for one / two / four threads; they do
+not establish the account's bundle baseline or remaining burst capacity.
+Confirm those in the Lightsail dashboard before inferring sustainable traffic.
+See the
 [Lightsail baseline table and averaging explanation](https://docs.aws.amazon.com/lightsail/latest/userguide/baseline-cpu-performance.html).
 
 Do not infer EC2 Unlimited CPU-surplus charges for a Lightsail bundle. Those
@@ -173,7 +197,7 @@ After the memory check and short model tests pass, run in the foreground as
 
 ```bash
 "$PYTHON" -m gpt2_local.public_chat \
-  --host 127.0.0.1 --port 8899 --offline --threads 1 \
+  --host 127.0.0.1 --port 8899 --offline --threads 2 \
   --public-origin http://localhost:8899 \
   --max-reply-tokens 256 --minimum-available-memory-gib 8
 ```
@@ -193,8 +217,13 @@ transmitting trial transcripts in plain HTTP across the public network.
 Before installing the unit, review its checkout path, cache path, origin,
 thread count, request cap, and memory limits. The example uses low CPU weight
 and niceness to give other work priority during contention; these are not
-absolute CPU caps and do not avoid burst-capacity consumption. `MemoryHigh=8G`
-and `MemoryMax=9G` assume a host with sufficient spare RAM. Use an explicit
+absolute CPU caps and do not avoid burst-capacity consumption. The example
+`MemoryHigh=8704M` (8.5 GiB) leaves more room above the observed 7.928 GiB
+process peak than the original 8 GiB soft limit; `MemoryMax=9G` is unchanged.
+The temporary private backend test ran with these limits, but its short reply
+and incomplete post-job cgroup evidence do not validate near-full-context
+memory or sustained operation under them. Set `GPT2_THREADS=2` for this host
+and use an explicit
 systemd drop-in for a measured budget on the chosen host; the pre-load check,
 process limit, and unrelated services' needs must agree. `MemorySwapMax=0`
 does not enable system swap.

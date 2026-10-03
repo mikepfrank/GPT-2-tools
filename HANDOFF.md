@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-02**
+Last updated: **2026-10-03**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -51,23 +51,53 @@ reinstall this branch into the shared WSL environment or restart its chat.
 The owner requests a modest anonymous public beta on Amazon Linux, running
 as the existing `gpt-2` account, with browser-owned chat state and compatible
 JSON import/export. Preserve the exact checkpoint and CPU FP32 baseline.
-One inference at a time is acceptable. Streaming and concurrent inference
-are later work. Build a bounded queue and short, reproducible single-user
-throughput measurements; avoid sustained CPU load tests by default.
+One inference at a time is acceptable; the public backend implements a bounded
+queue. Streaming and concurrent inference are later work. Keep throughput
+measurements short and reproducible; avoid sustained CPU load tests by default.
 
 The initial read-only `ssh lightsail` inventory on October 2, 2026 found
 Amazon Linux 2023.9 on x86_64, two vCPUs (Xeon Platinum 8175M), 7.6 GiB
 reported total RAM, 4.8 GiB available, no swap, and about 100 GiB free disk.
-The host also runs Astra Chess, Arcturus, Caddy, and other user processes.
-Its existing services and proxy must be preserved. Default system Python
-is 3.9; a namespaced 3.11 is installed. Use a separate namespaced supported
-Python and project environment instead of changing system Python.
+That snapshot explained the original memory gate; it is superseded by the
+owner's upgrade and authorized installation/trials on October 3. The host now
+has four vCPUs (two cores/two SMT threads each), 15.42 GiB total RAM, initially
+14.57 GiB available, no swap, and about 260 GiB free on a 320 GiB disk.
+It still runs Astra Chess, Arcturus, Caddy, and other user processes. Preserve
+their services, environments, configuration, and listeners.
 
-Capacity is unresolved: the full FP32 model requires roughly 6 GiB just
-for weights, plus an active KV cache (up to 600 MiB at 1,024 tokens) and
-temporary buffers. Do not load it on the shared 8 GiB host without resolving
-headroom. A larger host was proposed to the owner; no resize or model
-substitution has been authorized. No server TPS has been measured yet.
+Source commit `663c413` was transferred by Git bundle into
+`/home/gpt-2/GPT-2-tools`, with its origin set to GitHub; no push was needed.
+The installation and benchmark evidence refers to that source revision;
+later reviewed commits can be transferred by bundle without rewriting that
+provenance. `codex/gpt2-public` has not been published to GitHub, so use reviewed
+Git bundles until publication is authorized.
+The verified runtime uses namespaced Python 3.12.12, CPU PyTorch 2.14.1,
+Transformers 5.18.0, and Tokenizers 0.23.2 in
+`/home/gpt-2/.venvs/gpt2-public`, with
+`HF_HOME=/home/gpt-2/.cache/gpt2-public/huggingface`. System Python remains
+3.9.25; no OS upgrade was performed. The pinned 5.99 GiB checkpoint passed
+the full-file SHA-256 check, `pip check` passed, and all 157 Python tests passed
+on Amazon Linux. Both laptop installations remain separate.
+
+Short offline trials reproduced roughly 2.57–2.64 output tokens/second with
+two Torch threads and 39 input/32 output tokens, and 1.06 tokens/second with
+992 input/32 output tokens. Four threads consumed nearly all four vCPUs for
+little or no speed gain; use two threads for this shared host. Keep one
+inference worker and the default 8 GiB pre-load available-memory floor.
+Near-full-context process-lifetime peak RSS reached 7.928 GiB. These brief
+trials include prompt prefill and do not establish sustained burst capacity,
+concurrent throughput, or time to first token.
+
+The runtime installation, real-model benchmarks, and one private loopback
+public-backend API smoke test are complete. A temporary systemd unit handled
+new/preview/message/job polling/export/import with the real model, then stopped
+at its configured 180-second limit; no GPT-2 process or port-8899 listener
+remained. Permanent service installation, proxy routing, and a public endpoint
+are still pending. Existing chess services/proxy retained their process IDs
+and configuration hashes, and their application roots returned HTTP 200 with
+the configured Host names. Next, test the real browser through an SSH tunnel,
+then install the reviewed persistent unit and proxy route. The short API test
+does not validate near-full-context memory under the proposed service limits.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the public-service setup,
 operating controls, proxy integration, and benchmark procedure. Keep measured
@@ -90,8 +120,8 @@ do not predict GPT-2 inference throughput.
   seeds for repeated sampling at one temperature and saves an exact replay
   configuration before model loading.
 - The verified backend is CPU-only PyTorch in FP32. No NVIDIA GPU is present.
-- The Hugging Face model cache and Python virtual environment live in WSL,
-  outside the Git repository.
+- Separate Hugging Face caches and Python environments live in WSL and under
+  the Amazon Linux `gpt-2` account, outside the Git repository.
 - Python application dependencies and CPU PyTorch are pinned. The setup is not
   fully hermetic because Ubuntu packages and pip build tooling can change.
 - The local `main` branch tracks `origin/main`. The initial project snapshot
@@ -453,9 +483,11 @@ The following have been reproduced locally:
 Preserve the distinction between reproduced verification and untested
 expectations. The tests deliberately do not load or numerically validate the
 6 GB model; the offline sweeps and live chat smoke/replay checks provide model
-integration evidence. The last complete suite passed on October 2, 2026;
+integration evidence. The local-chat suite last passed on October 2, 2026;
 exact measurements and the distinction between synthetic and real-model
-checks are recorded in `VERIFICATION.md`.
+checks are recorded in `VERIFICATION.md`. The public branch's 157-test suite
+also passed on Amazon Linux on October 3, 2026; its short real-model trials
+are recorded separately from model-free coverage.
 
 ## Known limitations and caution points
 

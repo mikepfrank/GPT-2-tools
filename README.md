@@ -78,11 +78,17 @@ and short throughput benchmark are described in
 model cache for this service. The WSL installation and local chat launcher
 remain available for their existing uses.
 
-Public inference has **not yet been deployed or benchmarked**. The inspected
-Lightsail host has two vCPUs and 8 GiB RAM, already shared with other services.
-About 4.8 GiB was available during inspection, which leaves insufficient
-headroom for the roughly 6 GiB FP32 model plus generation working memory.
-Resolve capacity before loading the model on that host.
+The isolated Amazon Linux runtime was installed and benchmarked on October 3,
+2026, after the Lightsail host was upgraded to four vCPUs and 15.42 GiB RAM.
+With two Torch threads, short trials reached 2.57–2.64 output tokens/second
+for 39-token inputs and 32-token replies, and 1.06 tokens/second for a
+992-token input and 32-token reply. These rates include prompt prefill.
+Use two threads and one inference worker on this shared host, retaining the
+8 GiB available-memory startup floor. A temporary private loopback service
+also passed a real-model API generation and archive round trip. A persistent
+public web service and endpoint have **not yet been deployed**; browser testing
+and public setup remain. Exact results and remaining steps are
+in [`VERIFICATION.md`](VERIFICATION.md) and the deployment guide.
 
 ## Chat in a local browser
 

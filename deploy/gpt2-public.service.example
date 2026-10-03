@@ -21,7 +21,9 @@ MemoryAccounting=yes
 # Review these against the resized/dedicated host's available RAM and other
 # services before installation. An 8 GB shared host cannot fit this allocation.
 # Change with a systemd drop-in, not by silently dropping the pre-load guard.
-MemoryHigh=8G
+# Full-context trial process RSS peaked at 7.93 GiB. The 8.5 GiB soft limit
+# allows HTTP/cgroup overhead; verify the actual service cgroup peak after startup.
+MemoryHigh=8704M
 MemoryMax=9G
 MemorySwapMax=0
 OOMPolicy=stop
