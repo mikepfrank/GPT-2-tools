@@ -2,8 +2,9 @@
 
 Verified through **2026-10-03**, including the local tools, public-service
 preparation, isolated Amazon Linux runtime installation, and short real-model
-throughput trials and private backend API integration. Persistent public-service
-deployment, the public endpoint, and a real-model browser test remain pending.
+throughput trials, private backend integration, HTTPS public deployment, and
+real-model browser/API checks. Native browser file export and an actual reboot
+remain unverified; the cgroup budget has not been tested with a cold host cache.
 
 ## Host
 
@@ -622,9 +623,8 @@ The before/after preservation checks found `astra-chess`, `or-chess`, and
 `astra-caddy` still active with unchanged MainPIDs **4149 / 4313 / 4341** and
 unchanged configuration/unit-file hashes. No proxy edit, persistent GPT-2
 web-service installation, or public endpoint was added. The isolated runtime
-and inference trials are complete; a subsequent temporary private API test is
-recorded below. Real-browser testing and persistent service/proxy deployment
-remain next steps.
+and inference trials preceded the temporary private API test and subsequent
+public deployment/browser checks recorded below.
 
 Exact prompts/token IDs, generated token IDs/text hashes, dependency and source
 provenance, resource snapshots, and UTC timing remain in the ignored files
@@ -657,8 +657,8 @@ chat, obtained its exact preview, submitted **one** generation, and polled
 that job through completion. Export/import preserved the archive exactly
 except for its export timestamp; the source archive was unchanged, a separate
 new chat stayed empty, and final health was ready/idle. The real generation
-used **144 input tokens** and sampled **13 output tokens** before the chat
-boundary stop (`stop_sequence`), in **7.106534691 seconds** (**1.82930 sampled
+used **144 input tokens** and generated **13 output tokens** before the chat
+boundary stop (`stop_sequence`), in **7.106534691 seconds** (**1.82930 generated
 tokens/second**). Raw token metadata includes stopping tokens; the delimiter
 was omitted from the visible reply/context. Settings were temperature 0,
 seed 42, and at most 32 reply tokens. The full HTTP client flow took
@@ -684,6 +684,71 @@ The exact API requests/responses, prompt, sampled token IDs, reply hash,
 generation metadata, and checks remain in ignored
 `outputs/deploy/public-api-smoke-20261003.json` (SHA-256
 `7035942230611429e5479447382e8a5a02d1b1006a55460acc81c16d28e15016`).
-This verifies private backend integration with the real model. A real-browser
-SSH-tunnel test, persistent service installation, proxy configuration, and
-public access remain pending.
+This verified private backend integration with the real model before the
+public deployment and browser checks recorded below.
+
+## Public HTTPS deployment and browser/API checks (2026-10-03)
+
+The service was deployed from source
+`e627fd3c5be59d3687e154fd228ab8345949aea6` and is active/enabled as `gpt-2`
+(observed PID **39135**), with two Torch threads, `MemoryHigh=8704M` (8.5 GiB),
+`MemoryMax=9G`, and exact origin `https://gpt2-chat.arcturuschess.com`.
+The backend remains on `127.0.0.1:8899`. Autostart was verified with systemd;
+no reboot test was performed.
+
+The canonical name `gpt2-chat.arcturuschess.com` and alias
+`gpt-2.arcturuschess.com` both resolve by CNAME through `arcturuschess.com`
+to **16.145.194.176**. Authoritative DNS verified CNAME/A; public Cloudflare
+DNS-over-HTTPS verified A and absence of AAAA.
+The instance retained a cached NXDOMAIN, so preflight used public DNS-over-HTTPS
+and certificate/route checks used explicit loopback resolution without changing
+its resolver. Let's Encrypt issued certificates for both names at
+**22:47:26 UTC**. HTTP redirects 308 to HTTPS for each name; the HTTPS alias
+then redirects 308 to the canonical host, preserving path/query. A public
+request with a disallowed Origin returned 403 and `accepted:false`.
+
+Caddy **2.11.4** retained PID **4341**, `admin off`, and its file-based
+`caddy run` startup (no resume/watch/API workflow). The complete candidate was
+validated as `astra` with the same HOME/XDG environment under shared lock
+`/run/lock/astra-caddy-config.lock`. A `cp -a` backup was saved at
+`/home/astra/.config/astra-chess/Caddyfile.before-gpt2-20261003T224724Z`.
+The live file's inode was retained by an in-place write/fsync; host and
+process-mount-namespace hashes matched before SIGUSR1. The successful reload
+log, valid HTTPS API, redirects, and existing sites were checked. The original
+Caddyfile bytes remained its prefix, and the three existing unit-file hashes
+and chess PIDs **4149 / 4313** were unchanged. Caddyfile SHA-256 changed from
+`4d7ca60383b6ad7a27c97c5ee3c36327a5d8489894a9edfd2962e56fe362b529`
+to `fa0162212b9b205b9b186c16969a8201bf35b1d3a846d4adf6ab7f98dc681d03`.
+
+A real in-app HTTPS browser generated a reply from **227 input / 9 generated
+output tokens** with greedy decoding, seed 42, and a 16-token cap, in about
+**7.8 seconds (1.16 tokens/second)**, including first-request page-in/setup.
+Reload during inference recovered the same pending job without resubmission;
+reload after completion restored the validated chat and controls. Navigating
+through the alias redirected to the canonical URL and restored that same chat.
+The screenshot remains ignored at
+`outputs/deploy/public-browser-live-20261003.jpg`. Native Export/Save As
+automation did not complete its download wait; it did not establish a saved
+browser file. API export/import verification below is separate.
+
+A second HTTPS test, **22:49:08.344340–22:49:44.731901 UTC**, used a
+synthetically constructed near-full message/prompt with the **real GPT-2 model**:
+992 input tokens, 32 generated output tokens, greedy decoding, seed 42,
+`max_new_tokens` stop, and no truncation. One generation POST completed in
+**30.956060646 seconds (1.033723 tokens/second)**, with
+`cold_start_included=false`. Exact preview, one canonical round, source-archive
+preservation, export/import except timestamp, independent empty chat, and idle
+health before/after all passed. Full token IDs/metadata remain in ignored
+`outputs/deploy/public-near-context-smoke-20261003.json`, SHA-256
+`1c3412c158ffbf5cc001901c944b4b94382f3c6b513d22a453ef7e1b94493d05`.
+
+After that request, process VmHWM was **8,178,144 KiB (7.799 GiB)** and RSS
+**7,756,736 KiB (7.397 GiB)**; cgroup peak was **2,052,915,200 bytes
+(1.912 GiB)** and all `memory.events` counters were zero. The lower cgroup
+figure is consistent with previously cached/shared weight pages remaining
+charged elsewhere; page ownership was not directly inspected. This follows
+the kernel's [memory-ownership rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-ownership).
+Available host RAM was **13,730,713,600 bytes (12.79 GiB)** of
+16,558,186,496 total, with no swap. The host cache was not flushed: this proves
+the observed warm-cache request passed, not a 9 GiB cold-cache cgroup budget or
+sustained public capacity.

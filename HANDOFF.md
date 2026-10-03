@@ -88,16 +88,27 @@ Near-full-context process-lifetime peak RSS reached 7.928 GiB. These brief
 trials include prompt prefill and do not establish sustained burst capacity,
 concurrent throughput, or time to first token.
 
-The runtime installation, real-model benchmarks, and one private loopback
-public-backend API smoke test are complete. A temporary systemd unit handled
-new/preview/message/job polling/export/import with the real model, then stopped
-at its configured 180-second limit; no GPT-2 process or port-8899 listener
-remained. Permanent service installation, proxy routing, and a public endpoint
-are still pending. Existing chess services/proxy retained their process IDs
-and configuration hashes, and their application roots returned HTTP 200 with
-the configured Host names. Next, test the real browser through an SSH tunnel,
-then install the reviewed persistent unit and proxy route. The short API test
-does not validate near-full-context memory under the proposed service limits.
+The public beta is deployed at <https://gpt2-chat.arcturuschess.com/>;
+`gpt-2.arcturuschess.com` redirects to that canonical origin. The persistent
+`gpt2-public` unit is active/enabled as `gpt-2`, uses two Torch threads,
+`MemoryHigh=8704M` / `MemoryMax=9G`, and keeps its backend on loopback 8899.
+Deployment used source `e627fd3c5be59d3687e154fd228ab8345949aea6`.
+Real-browser generation, pending-job reload without resubmission, completed-chat
+recovery, and alias navigation passed. A real-model 992-input/32-output-token
+HTTPS API test also passed exact preview, archive transfers, and isolation.
+Native browser Save As automation was not completed; only API archive round
+trips are verified. Autostart is enabled but has not been tested by reboot.
+
+The existing Caddy 2.11.4 process keeps `admin off` and has no `ExecReload`.
+Its file-based `caddy run` supports SIGUSR1 reloads (require Caddy >=2.11.0).
+Its Caddyfile is individually
+bind-mounted: hold `/run/lock/astra-caddy-config.lock`, validate/back up, update
+the existing inode in place with fsync, verify host/mount-namespace bytes, then
+signal the main process and check logs/HTTPS/old sites. Do not enable the admin
+API merely to reload. Caddy PID 4341 and chess PIDs 4149/4313 remained unchanged;
+all three existing unit hashes and original Caddyfile prefix were preserved.
+The observed warm-cache near-full request fit the running limits, but does not
+prove the 9 GiB cgroup budget for a cold-cache start or sustained traffic.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the public-service setup,
 operating controls, proxy integration, and benchmark procedure. Keep measured

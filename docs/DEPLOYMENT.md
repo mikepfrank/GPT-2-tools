@@ -28,16 +28,21 @@ the check also respects cgroup headroom and excludes swap. The larger host
 permitted these trials without lowering the guard. Recheck available capacity
 before later model loads, and avoid a second resident copy during testing.
 
-A temporary loopback public-backend unit also passed one real-model API
-generation, preview, job polling, and exact archive export/import on October 3.
-It ran as `gpt-2` with two threads and a 32-token reply cap, then stopped at its
-configured 180-second runtime limit with no GPT-2 process/listener remaining.
-The persistent GPT-2 web service and proxy route have **not** been installed
-or enabled, and no public endpoint exists yet. Existing chess services and
-Caddy retained their MainPIDs and configuration/unit hashes; application-root
-checks returned HTTP 200 with their configured Host names. The remaining
-steps are private real-browser testing, reviewed persistent service installation,
-and proxy integration.
+The public beta is active at
+<https://gpt2-chat.arcturuschess.com/>; <https://gpt-2.arcturuschess.com/>
+redirects to that canonical host, preserving path/query. Both CNAMEs point
+through `arcturuschess.com` to 16.145.194.176, with no published AAAA. Caddy
+issued valid HTTPS certificates for both. The `gpt2-public` service is active
+and enabled as `gpt-2`, using two threads, the exact canonical HTTPS origin,
+`MemoryHigh=8704M`, and `MemoryMax=9G`. Enabling was verified; no reboot test
+was performed. The deployed application source was `e627fd3`.
+
+Real-browser generation, pending-job reload without resubmission, completed-chat
+recovery, and alias navigation passed. A real-model near-full HTTPS request
+also passed preview, archive transfer, isolation, and idle-health checks. Native
+browser Save As automation was not completed; only API archive round trips
+are verified. Existing chess/Caddy PIDs and unit hashes remained unchanged;
+the Caddyfile retained its original bytes and added the GPT-2 routes.
 
 ## Install an isolated runtime
 
@@ -220,15 +225,17 @@ and niceness to give other work priority during contention; these are not
 absolute CPU caps and do not avoid burst-capacity consumption. The example
 `MemoryHigh=8704M` (8.5 GiB) leaves more room above the observed 7.928 GiB
 process peak than the original 8 GiB soft limit; `MemoryMax=9G` is unchanged.
-The temporary private backend test ran with these limits, but its short reply
-and incomplete post-job cgroup evidence do not validate near-full-context
-memory or sustained operation under them. Set `GPT2_THREADS=2` for this host
-and use an explicit
+The running service passed a near-full request with these limits and zero
+memory-event counters. The lower cgroup figure is consistent with previously
+cached/shared weight pages remaining charged elsewhere; page ownership was
+not directly inspected. This does not prove a cold-cache 9 GiB budget or
+sustained operation. Set `GPT2_THREADS=2` for this host and use an explicit
 systemd drop-in for a measured budget on the chosen host; the pre-load check,
 process limit, and unrelated services' needs must agree. `MemorySwapMax=0`
 does not enable system swap.
 
-As `ec2-user`, after review:
+The current host already has the reviewed unit/environment installed. For a
+fresh deployment, as `ec2-user` after review (replace the domain placeholder):
 
 ```bash
 sudo install -o root -g root -m 0600 /home/gpt-2/GPT-2-tools/deploy/gpt2-public.env.example /etc/gpt2-public.env
@@ -240,7 +247,7 @@ sudo systemctl start gpt2-public.service
 sudo systemctl status gpt2-public.service --no-pager
 sudo journalctl -u gpt2-public.service -n 50 --no-pager
 # Match the configured origin's host; change this header with the origin.
-curl --fail --header 'Host: localhost:8899' http://127.0.0.1:8899/api/health
+curl --fail --header 'Host: YOUR_GPT2_DOMAIN' http://127.0.0.1:8899/api/health
 ```
 
 Enable autostart only after the service and preservation checks pass:
@@ -255,43 +262,50 @@ storage is local to that browser profile/origin; exporting structured transcript
 is the portability mechanism. Clearing browser storage or changing origin can
 lose local recovery unless the user exports first.
 
-## Integrate the existing proxy later
+## Operate the existing proxy
 
-The active `astra-caddy` proxy already owns 80/443. Do not install a competing
-listener or replace its Caddyfile. For a dedicated domain, configure DNS, set
-`GPT2_PUBLIC_ORIGIN` to its exact HTTPS origin, and merge the site block in
-`deploy/Caddyfile.gpt2.example` into the actual existing proxy configuration.
-Keep the old configuration backed up and validate the complete candidate with
-the installed Caddy executable and the active configuration format before a
-reload. The inspected configuration is
-`/home/astra/.config/astra-chess/Caddyfile` and its executable is
-`/home/astra/.local/bin/caddy`; confirm these against the live unit before use.
-The inspected `astra-caddy.service` has no `ExecReload`, so use Caddy's admin
-API reload command after validation, in the `astra` account with the same
-environment/admin endpoint as the live proxy. For example, once those details
-are confirmed:
+The existing `astra-caddy` owns 80/443. Its Caddy 2.11.4 binary is
+`/home/astra/.local/bin/caddy`, and the active file is
+`/home/astra/.config/astra-chess/Caddyfile`. The service has `admin off`, no
+`ExecReload`, and runs `caddy run` from that file without resume/watch or an
+API configuration workflow. `caddy reload` needs an enabled admin endpoint;
+this deployment instead uses SIGUSR1. Require **Caddy 2.11.0 or newer** and
+file-based startup without resume/API changes; older 2.x versions ignored this
+signal. Confirm version/startup conditions before future signals; see
+[Caddy's signal documentation](https://caddyserver.com/docs/command-line#signals).
+Keep the admin endpoint disabled.
 
-```bash
-sudo -iu astra /home/astra/.local/bin/caddy validate --config /home/astra/.config/astra-chess/Caddyfile --adapter caddyfile
-sudo -iu astra /home/astra/.local/bin/caddy reload --config /home/astra/.config/astra-chess/Caddyfile --adapter caddyfile
-```
+For another deployment, replace the domain placeholder in
+`deploy/Caddyfile.gpt2.example`, configure DNS, and set `GPT2_PUBLIC_ORIGIN`
+to the exact canonical HTTPS origin. Serve the application at the site root.
+The current alias redirects to the canonical origin so browser storage remains
+at one origin. Export/import is needed when deliberately changing that origin.
 
-An explicitly configured admin endpoint may require `--address` on reload;
-do not use an unverified default. See
-[Caddy's reload command](https://caddyserver.com/docs/command-line#caddy-reload).
-Do not overwrite any chess site blocks or restart the live proxy merely to
-apply this new site.
+For a configuration change or rollback:
 
-For testing through the current instance address, choose an explicit unused
-origin/site route on the existing proxy and set that origin in the backend.
-The current UI/API expects the site root, so do not assume a `/gpt2` path prefix
-works. Use the SSH tunnel for private tests. For an initial public beta before
-procuring a domain, the example site block can instead begin with
-`http://YOUR_PUBLIC_IP`, with `GPT2_PUBLIC_ORIGIN=http://YOUR_PUBLIC_IP`.
-Confirm the existing proxy has no conflicting IP site before merging it.
-This temporary HTTP origin sends chat content without transport encryption.
-When moving to the dedicated HTTPS domain, export chats first and import them
-at the new origin, because browser storage is scoped to each origin.
+1. Hold the existing root-owned maintenance lock
+   `/run/lock/astra-caddy-config.lock` with `flock` through validation,
+   writing, signalling, and verification. Preserve all existing chess blocks.
+2. Back up the current file with `cp -a`. Validate the complete candidate as
+   `astra` using the same HOME/XDG environment, installed binary, and
+   `--adapter caddyfile`.
+3. Write the validated bytes to the **existing inode**, then flush/fsync.
+   The unit individually bind-mounts the Caddyfile: an atomic rename would
+   leave its namespace reading the old inode. Compare candidate, host-file,
+   and process-mount-namespace hashes before signalling.
+4. Reload only the main process:
+   `sudo systemctl kill --kill-whom=main --signal=SIGUSR1 astra-caddy.service`.
+   Require a successful reload log, valid TLS/API and redirect behavior, and
+   unchanged chess health/PIDs before releasing the lock. Do not interpret
+   successful signal delivery alone as successful reload.
+5. For rollback, validate the saved backup, restore its bytes in place under
+   the same lock, fsync, compare namespace hashes, send SIGUSR1, and repeat
+   health checks. Stop only `gpt2-public` if its backend also needs rollback.
+
+The October 3 pre-GPT-2 backup is
+`/home/astra/.config/astra-chess/Caddyfile.before-gpt2-20261003T224724Z`.
+That reload kept Caddy PID 4341 and existing chess PIDs 4149/4313 unchanged.
+Do not restart the shared proxy or enable its admin API merely to reload.
 
 The reverse proxy must overwrite `X-Real-IP` with the actual connecting client's
 address and retain the requested host. The example clears visitor-supplied

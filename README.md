@@ -65,6 +65,11 @@ gpt2-xl                         # interactive mode
 
 ## Public anonymous chat
 
+The public beta is available at
+[GPT-2 chat](https://gpt2-chat.arcturuschess.com/).
+[gpt-2.arcturuschess.com](https://gpt-2.arcturuschess.com/) redirects to that
+canonical address, preserving paths and query strings.
+
 The `codex/gpt2-public` branch adds a public-service variant of the browser
 chat. It uses the same pinned GPT-2 XL CPU FP32 checkpoint and conversation
 protocol, with one generation running at a time and a bounded waiting queue.
@@ -84,10 +89,11 @@ With two Torch threads, short trials reached 2.57–2.64 output tokens/second
 for 39-token inputs and 32-token replies, and 1.06 tokens/second for a
 992-token input and 32-token reply. These rates include prompt prefill.
 Use two threads and one inference worker on this shared host, retaining the
-8 GiB available-memory startup floor. A temporary private loopback service
-also passed a real-model API generation and archive round trip. A persistent
-public web service and endpoint have **not yet been deployed**; browser testing
-and public setup remain. Exact results and remaining steps are
+8 GiB available-memory startup floor. The service is active and enabled as
+`gpt-2`, behind the existing Caddy proxy with HTTPS. Real-browser generation,
+reload recovery during a pending reply, alias navigation, and a near-full
+context API archive round trip passed. Native browser Save As automation was
+not completed; API export/import is verified. Exact results and operations are
 in [`VERIFICATION.md`](VERIFICATION.md) and the deployment guide.
 
 ## Chat in a local browser
