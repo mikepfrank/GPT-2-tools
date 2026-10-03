@@ -20,6 +20,7 @@ dependencies = [
 gpt2-xl = "gpt2_local.cli:main"
 gpt2-experiment = "gpt2_local.experiment:main"
 gpt2-chat = "gpt2_local.chat:main"
+gpt2-public = "gpt2_local.public_chat:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

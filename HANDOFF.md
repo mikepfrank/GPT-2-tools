@@ -41,6 +41,40 @@ as `./chat.ps1 -Offline -Port 8899`. Select the new checkout's source through
 installation unchanged. Dependency/backend experiments should use a separate
 environment. Git worktrees do not copy ignored local transcripts or caches.
 
+## Public-service development
+
+Public-service work lives in `codex/gpt2-public`, branched from chat tip
+`3657a8101b9da797ab6e4d5ac25ffc18f4e0b58a`, in `.worktrees/gpt2-public`.
+Keep both the primary checkout and `.worktrees/gpt2-chat` available; do not
+reinstall this branch into the shared WSL environment or restart its chat.
+
+The owner requests a modest anonymous public beta on Amazon Linux, running
+as the existing `gpt-2` account, with browser-owned chat state and compatible
+JSON import/export. Preserve the exact checkpoint and CPU FP32 baseline.
+One inference at a time is acceptable. Streaming and concurrent inference
+are later work. Build a bounded queue and short, reproducible single-user
+throughput measurements; avoid sustained CPU load tests by default.
+
+The initial read-only `ssh lightsail` inventory on October 2, 2026 found
+Amazon Linux 2023.9 on x86_64, two vCPUs (Xeon Platinum 8175M), 7.6 GiB
+reported total RAM, 4.8 GiB available, no swap, and about 100 GiB free disk.
+The host also runs Astra Chess, Arcturus, Caddy, and other user processes.
+Its existing services and proxy must be preserved. Default system Python
+is 3.9; a namespaced 3.11 is installed. Use a separate namespaced supported
+Python and project environment instead of changing system Python.
+
+Capacity is unresolved: the full FP32 model requires roughly 6 GiB just
+for weights, plus an active KV cache (up to 600 MiB at 1,024 tokens) and
+temporary buffers. Do not load it on the shared 8 GiB host without resolving
+headroom. A larger host was proposed to the owner; no resize or model
+substitution has been authorized. No server TPS has been measured yet.
+
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the public-service setup,
+operating controls, proxy integration, and benchmark procedure. Keep measured
+results in `VERIFICATION.md`, recording runtime, exact prompt/settings,
+thread count, cold/warm status, and CPU/memory use. Core-count ratios alone
+do not predict GPT-2 inference throughput.
+
 ## Current state
 
 - The setup downloads and verifies the full 1.5B-class GPT-2 XL checkpoint;

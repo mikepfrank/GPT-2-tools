@@ -1,0 +1,37 @@
+[Unit]
+Description=Public GPT-2 XL browser chat (CPU FP32)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=gpt-2
+Group=gpt-2
+WorkingDirectory=/home/gpt-2/GPT-2-tools
+EnvironmentFile=/etc/gpt2-public.env
+ExecStart=/home/gpt-2/.venvs/gpt2-public/bin/python -m gpt2_local.public_chat --host 127.0.0.1 --port 8899 --offline --threads ${GPT2_THREADS} --public-origin ${GPT2_PUBLIC_ORIGIN} --trusted-proxy 127.0.0.1 --max-reply-tokens ${GPT2_MAX_REPLY_TOKENS} --minimum-available-memory-gib ${GPT2_MIN_AVAILABLE_MEMORY_GIB}
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=180
+UMask=0077
+Nice=10
+CPUWeight=10
+MemoryAccounting=yes
+# Review these against the resized/dedicated host's available RAM and other
+# services before installation. An 8 GB shared host cannot fit this allocation.
+# Change with a systemd drop-in, not by silently dropping the pre-load guard.
+MemoryHigh=8G
+MemoryMax=9G
+MemorySwapMax=0
+OOMPolicy=stop
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/gpt-2/.cache/gpt2-public
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

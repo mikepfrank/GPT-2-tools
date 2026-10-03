@@ -1,6 +1,7 @@
 # Verification record
 
-Verified locally through **2026-10-01**.
+Verified locally through **2026-10-02**. Public-service preparation has been
+checked locally; Amazon Linux inference remains unverified.
 
 ## Host
 
@@ -482,3 +483,55 @@ A separate test chat imported an older marked archive and generated one token
 from a compact 165-token input in 1.6 seconds, using temperature 0.8 and seed
 42. Browser inspection and a screenshot confirmed one blank line after the
 ellipsis. No generation test altered the owner's restored chat.
+
+## Public anonymous service preparation (2026-10-02)
+
+Work is isolated on `codex/gpt2-public`, starting at chat commit `3657a81`.
+The existing local server, its source, and the shared editable WSL installation
+were not used for the public-service smoke test or reinstalled.
+
+The complete **157-test Python suite** passed in **8.664 seconds** using the
+existing pinned WSL environment with this worktree's `src` selected explicitly
+through `PYTHONPATH`. This includes the original 125 tests and 32 new
+fake-runner/HTTP tests for public archive restoration, independent browser
+chats, FIFO single-worker execution, previews/transfers during generation,
+queue/job/rate/connection limits, expiry, transactional failure and regeneration,
+origin/proxy validation, tokenizer synchronization, cooperative decoding
+deadlines, and host/cgroup memory guards before runner construction.
+
+All **16 frontend lifecycle tests** passed under bundled Node **24.19.0**.
+They cover durable transcript/draft/settings recovery, server restarts, offline
+export, 63-bit seed handling and export seed updates, duplicate tabs, queue
+errors with explicit rejection acknowledgements, pending job recovery,
+transient polling failures, uncertain POST acknowledgements,
+import/regeneration rollback, unavailable/full storage, and near-limit Unicode
+exports that remain within the import byte limit without losing history.
+Python compilation, Bash setup syntax, and `git diff --check` passed.
+
+A separate localhost server on port 8899 used only a synthetic runner and
+synthetic token counting. A real in-app browser completed a message, then
+reloaded during regeneration and recovered that same queued job. The active
+seed advanced from 42 to 43, the transcript still contained one generated
+human/model round after its two authored examples, and the unsent draft
+survived. The screenshot and temporary helper remain in ignored
+`outputs/chats/`. Their displayed TPS is synthetic and provides no GPT-2
+performance evidence.
+
+The benchmark's dry run saved a plan without importing Torch or loading the
+model. An intentionally unreachable 1,000 GiB available-memory floor caused
+the non-dry benchmark to decline with exit code 2 before model loading,
+using the system Python that has no Torch installation. These checks verify
+planning and the guard, not inference or numeric performance.
+
+Read-only SSH inspection found Amazon Linux 2023.9, x86_64, two vCPUs
+(Xeon Platinum 8175M, reporting one core/two threads), 7.6 GiB total RAM,
+about 4.8 GiB available RAM, no swap, and about 100 GiB free disk. Existing
+Astra, Arcturus, Caddy, and other user processes share the host. System Python
+is 3.9.25; namespaced Python 3.11.14 with ensurepip is installed. These are
+dated host observations. No package installation, model download/load,
+service change, proxy edit, or throughput trial was performed on the host.
+
+The deployment templates and Amazon Linux setup script are prepared, but their
+installation has not been reproduced. The shared host currently lacks the
+headroom for the unchanged CPU FP32 model and its generation working memory;
+the deployment and server TPS benchmark await the owner's capacity decision.

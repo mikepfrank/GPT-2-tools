@@ -63,6 +63,27 @@ gpt2-xl "Reversible computing is" --max-new-tokens 60 --seed 42
 gpt2-xl                         # interactive mode
 ```
 
+## Public anonymous chat
+
+The `codex/gpt2-public` branch adds a public-service variant of the browser
+chat. It uses the same pinned GPT-2 XL CPU FP32 checkpoint and conversation
+protocol, with one generation running at a time and a bounded waiting queue.
+Each browser keeps its complete chat archive; the service validates supplied
+archives and retains only temporary inference jobs and results. JSON exports
+remain compatible with the original local application.
+
+The Amazon Linux installation, service configuration, deployment prerequisites,
+and short throughput benchmark are described in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Use a separate Python environment and
+model cache for this service. The WSL installation and local chat launcher
+remain available for their existing uses.
+
+Public inference has **not yet been deployed or benchmarked**. The inspected
+Lightsail host has two vCPUs and 8 GiB RAM, already shared with other services.
+About 4.8 GiB was available during inspection, which leaves insufficient
+headroom for the roughly 6 GiB FP32 model plus generation working memory.
+Resolve capacity before loading the model on that host.
+
 ## Chat in a local browser
 
 Start the chat server from PowerShell in this checkout:
