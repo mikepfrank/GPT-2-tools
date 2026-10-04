@@ -285,6 +285,13 @@ stored under an old origin does not move with the redirect: export there before
 changing origins, then import at the new domain. The owner confirmed the only
 existing chat was safely exported before the October 3 dedicated-domain move.
 
+The GPT-2 site discards all query parameters before proxying with `rewrite * ?`.
+This query-only [Caddy rewrite](https://caddyserver.com/docs/caddyfile/directives/rewrite)
+preserves the request path, method, and body, allowing links with Facebook's
+`fbclid` or other tracking parameters. HTTP/alias redirects may retain the
+query in the browser URL; it is ignored when reaching the canonical HTTPS site.
+The loopback Python backend keeps its strict routing, Origin checks, and limits.
+
 For a configuration change or rollback:
 
 1. Hold the existing root-owned maintenance lock
@@ -314,6 +321,11 @@ The later dedicated-domain backups are
 `/home/astra/.config/astra-chess/Caddyfile.before-domain-20261004T000342Z` and
 `/etc/gpt2-public.env.before-domain-20261004T000342Z`; a domain rollback must
 restore a coherent proxy route and GPT-2 allowed origin.
+
+The query-parameter fix backup is
+`/home/astra/.config/astra-chess/Caddyfile.before-query-20261004T010433Z`.
+This change added only `rewrite * ?` and its comment to the canonical GPT-2
+block; its validated SIGUSR1 reload required no GPT-2 restart.
 
 The reverse proxy must overwrite `X-Real-IP` with the actual connecting client's
 address and retain the requested host. The example clears visitor-supplied
