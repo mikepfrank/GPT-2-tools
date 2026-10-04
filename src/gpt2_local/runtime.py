@@ -52,6 +52,15 @@ class GenerationSettings:
 
 
 @dataclass(frozen=True)
+class SampledToken:
+    """One observed continuation token; elapsed time includes prompt prefill."""
+
+    token_id: int
+    output_tokens: int
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
 class GenerationResult:
     """A continuation plus measurements of all sampled tokens, including stops."""
 
@@ -206,15 +215,20 @@ class Gpt2Runner:
         include_prompt: bool = False,
         stop_sequences: tuple[str, ...] = (),
         stop_pattern: str | None = None,
+        on_token: Callable[[SampledToken], None] | None = None,
     ) -> GenerationResult:
         """Generate text, optionally stopping before a decoded continuation marker.
 
         Literal and regex stop matching excludes the prompt. Token IDs and
         counts still describe every sampled token, including stop markers.
+        An observer runs synchronously after each continuation token's stopping
+        checks. Exceptions propagate; observation does not signal chat success.
         """
         settings.validate()
         if not prompt:
             raise ValueError("prompt cannot be empty")
+        if on_token is not None and not callable(on_token):
+            raise ValueError("on_token must be callable or None")
         if isinstance(stop_sequences, str) or any(
             not isinstance(sequence, str) or not sequence
             for sequence in stop_sequences
@@ -309,6 +323,37 @@ class Gpt2Runner:
             generation_arguments["stopping_criteria"] = StoppingCriteriaList(
                 [ContinuationStops()]
             )
+
+        if on_token is not None:
+            from transformers.generation.streamers import BaseStreamer
+
+            class TokenObserver(BaseStreamer):
+                def __init__(self) -> None:
+                    self._skip_prompt = True
+                    self._output_tokens = 0
+
+                def put(self, value) -> None:
+                    # Transformers sends the supplied prompt first, then one
+                    # continuation token for our single-sequence generation.
+                    if self._skip_prompt:
+                        self._skip_prompt = False
+                        return
+                    token_ids = value.tolist()
+                    if len(token_ids) != 1 or not isinstance(token_ids[0], int):
+                        raise ValueError("Token observation requires batch size one")
+                    self._output_tokens += 1
+                    on_token(SampledToken(
+                        token_id=int(token_ids[0]),
+                        output_tokens=self._output_tokens,
+                        elapsed_seconds=time.perf_counter() - started,
+                    ))
+
+                def end(self) -> None:
+                    # The caller validates and commits the returned result;
+                    # deadline/callback exceptions can bypass this method.
+                    pass
+
+            generation_arguments["streamer"] = TokenObserver()
 
         started = time.perf_counter()
         with torch.inference_mode():

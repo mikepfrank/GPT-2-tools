@@ -19,10 +19,12 @@ from urllib.parse import urlsplit
 
 from .chat import ChatApplication, ChatSession, parse_settings, resolve_seed
 from .chat_archive import export_chat
-from .runtime import MODEL_CONTEXT_TOKENS, MODEL_ID, MODEL_REVISION, GenerationSettings, Gpt2Runner
+from .runtime import MODEL_CONTEXT_TOKENS, MODEL_ID, MODEL_REVISION, GenerationSettings, Gpt2Runner, SampledToken
+from .streaming import ReplyStreamDecoder
 
 MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
 MAX_BODY_BYTES = MAX_ARCHIVE_BYTES + 65536
+MAX_STREAM_FRAME_BYTES = 1024 * 1024
 
 
 class ServiceError(Exception):
@@ -148,13 +150,23 @@ class _Job:
     finished: float | None = None
     state: dict[str, object] | None = None
     error: str | None = None
+    seq: int = 0
+    progress_status: str = ""
+    progress_position: int = -1
+    reply_text: str = ""
+    generated_tokens: int = 0
+    started: float | None = None
+    first_token_seconds: float | None = None
+    first_visible_seconds: float | None = None
+    last_token_seconds: float | None = None
 
 
 class PublicChatApplication:
     """Only queued/running jobs and short-lived results live on the server."""
-    def __init__(self, runner: Gpt2Runner, limits: Limits | None = None, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, runner: Gpt2Runner, limits: Limits | None = None, *, clock: Callable[[], float] = time.monotonic, enable_streaming: bool = False) -> None:
         self.limits = limits or Limits()
         self.clock = clock
+        self.enable_streaming = enable_streaming
         self.runner = _PublicRunner(runner, self.limits.generation_timeout_seconds, clock)
         self._condition = threading.Condition()
         self._pending: deque[str] = deque()
@@ -217,6 +229,7 @@ class PublicChatApplication:
             elif job.status == "queued" and now - job.created >= self.limits.queue_ttl_seconds:
                 job.status, job.finished, job.error, job.session = "failed", now, "The queued reply expired; send it again when the service is less busy", None
                 job.message = None
+                self._condition.notify_all()
         self._pending = deque(identifier for identifier in self._pending if identifier in self._jobs and self._jobs[identifier].status == "queued")
         for client, (requests, generations) in list(self._rates.items()):
             for values in (requests, generations):
@@ -263,12 +276,64 @@ class PublicChatApplication:
             self._jobs[identifier] = job
             self._pending.append(identifier)
             result = self._job_state(job)
-            self._condition.notify()
+            self._condition.notify_all()
             return result
+
+    def _progress(self, job: _Job) -> dict[str, object]:
+        """Call under the condition; keep only one cumulative snapshot per job."""
+        position = list(self._pending).index(job.identifier) + 1 if job.identifier in self._pending else 0
+        if (job.progress_status, job.progress_position) != (job.status, position):
+            job.seq += 1
+            job.progress_status, job.progress_position = job.status, position
+        return {"version": 1, "seq": job.seq, "status": job.status, "position": position,
+                "generated_tokens": job.generated_tokens, "reply_text": job.reply_text}
+
+    def wait_progress(self, identifier: str, after: int | None = None, timeout: float = 0) -> dict[str, object]:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                self._cleanup(self.clock())
+                if identifier not in self._jobs:
+                    raise ServiceError(404, "Reply job expired or was not found; your saved chat is unchanged")
+                progress = self._progress(self._jobs[identifier])
+                remaining = deadline - time.monotonic()
+                if after is None or progress["seq"] != after or progress["status"] in ("complete", "failed") or self._closed or remaining <= 0:
+                    return progress
+                self._condition.wait(timeout=remaining)
+
+    def _observer(self, job: _Job) -> Callable[[SampledToken], None]:
+        with self.runner._tokenizer_lock:
+            decoder = ReplyStreamDecoder(self.runner._runner.tokenizer.backend_tokenizer)
+        def observe(event: SampledToken) -> None:
+            callback_started = time.perf_counter()
+            with self.runner._tokenizer_lock:
+                text = decoder.push(event.token_id)
+            with self._condition:
+                if not job.generated_tokens < event.output_tokens <= job.settings.max_new_tokens:
+                    raise ValueError("Invalid streamed token accounting")
+                job.reply_text, job.generated_tokens = text, event.output_tokens
+                if job.first_token_seconds is None:
+                    job.first_token_seconds = event.elapsed_seconds
+                if text and job.first_visible_seconds is None:
+                    job.first_visible_seconds = event.elapsed_seconds + time.perf_counter() - callback_started
+                job.last_token_seconds = event.elapsed_seconds
+                job.seq += 1
+                self._condition.notify_all()
+        return observe
 
     def _job_state(self, job: _Job) -> dict[str, object]:
         position = list(self._pending).index(job.identifier) + 1 if job.identifier in self._pending else 0
         result: dict[str, object] = {"job_id": job.identifier, "status": job.status, "position": position}
+        if self.enable_streaming:
+            progress = self._progress(job)
+            if job.status in ("queued", "running"):
+                result["progress"] = progress
+            duration = (job.last_token_seconds - job.first_token_seconds
+                        if job.first_token_seconds is not None and job.last_token_seconds is not None else 0)
+            result["delivery"] = {"queue_seconds": job.started - job.created if job.started is not None else None,
+                                  "first_token_seconds": job.first_token_seconds,
+                                  "first_visible_seconds": job.first_visible_seconds,
+                                  "decoding_tokens_per_second": (job.generated_tokens - 1) / duration if job.generated_tokens >= 2 and duration > 0 else None}
         if job.state is not None:
             result["state"] = job.state
         if job.error is not None:
@@ -294,6 +359,7 @@ class PublicChatApplication:
                            "max_queue": self.limits.max_queue, "result_ttl_seconds": self.limits.result_ttl_seconds,
                            "generation_timeout_seconds": self.limits.generation_timeout_seconds},
                 "queue": {"waiting": len(self._pending), "running": self._running is not None},
+                "capabilities": {"streaming": self.enable_streaming},
             }
 
     def _work(self) -> None:
@@ -308,13 +374,17 @@ class PublicChatApplication:
                 identifier = self._pending.popleft()
                 job = self._jobs[identifier]
                 job.status = "running"
+                job.started = self.clock()
                 self._running = identifier
+                self._progress(job)
+                self._condition.notify_all()
             try:
                 assert job.session is not None
+                observed = {"on_token": self._observer(job)} if self.enable_streaming else {}
                 if job.regenerate:
-                    job.session.regenerate(job.settings, self.runner)  # type: ignore[arg-type]
+                    job.session.regenerate(job.settings, self.runner, **observed)  # type: ignore[arg-type]
                 else:
-                    job.session.reply(job.message, job.settings, self.runner)  # type: ignore[arg-type]
+                    job.session.reply(job.message, job.settings, self.runner, **observed)  # type: ignore[arg-type]
                 state = self._state(job.session)
                 error = None
             except GenerationTimeout:
@@ -329,6 +399,7 @@ class PublicChatApplication:
                 job.finished, job.session = self.clock(), None
                 job.message = None
                 self._running = None
+                self._progress(job)
                 self._condition.notify_all()
 
     def close(self, timeout: float = 5) -> None:
@@ -368,7 +439,7 @@ class PublicChatServer(ThreadingHTTPServer):
     block_on_close = False
     request_queue_size = 16
 
-    def __init__(self, address: tuple[str, int], application: PublicChatApplication | None, *, public_origins: tuple[str, ...] = (), trusted_proxies: tuple[str, ...] = (), max_handlers: int = 16, request_timeout: float = 15) -> None:
+    def __init__(self, address: tuple[str, int], application: PublicChatApplication | None, *, public_origins: tuple[str, ...] = (), trusted_proxies: tuple[str, ...] = (), max_handlers: int = 16, request_timeout: float = 15, max_streams: int = 4, max_streams_per_client: int = 2, stream_heartbeat: float = 5, stream_lease: float = 60) -> None:
         if not ipaddress.ip_address(address[0]).is_loopback:
             raise ValueError("The Python service must bind a loopback address behind a reverse proxy")
         self.application = application
@@ -378,8 +449,29 @@ class PublicChatServer(ThreadingHTTPServer):
             raise ValueError("Trusted reverse proxies must use loopback addresses")
         self.request_timeout = request_timeout
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
+        self._stream_lock = threading.Lock()
+        self._stream_clients: dict[str, int] = {}
+        self._max_streams = min(max_streams, max(0, max_handlers - 1))
+        self._max_streams_per_client = max_streams_per_client
+        self.stream_heartbeat, self.stream_lease = stream_heartbeat, stream_lease
+        if max_streams < 1 or max_streams_per_client < 1 or not all(math.isfinite(value) and value > 0 for value in (stream_heartbeat, stream_lease)):
+            raise ValueError("Streaming limits must be positive and finite")
         super().__init__(address, PublicChatHandler)
         self.local_origins = {f"http://127.0.0.1:{self.server_port}", f"http://localhost:{self.server_port}"}
+
+    def acquire_stream(self, client: str) -> None:
+        with self._stream_lock:
+            if sum(self._stream_clients.values()) >= self._max_streams or self._stream_clients.get(client, 0) >= self._max_streams_per_client:
+                raise ServiceError(503, "Streaming connections are busy; check the same reply with polling")
+            self._stream_clients[client] = self._stream_clients.get(client, 0) + 1
+
+    def release_stream(self, client: str) -> None:
+        with self._stream_lock:
+            remaining = self._stream_clients[client] - 1
+            if remaining:
+                self._stream_clients[client] = remaining
+            else:
+                del self._stream_clients[client]
 
     def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
         if not self._handler_slots.acquire(blocking=False):
@@ -467,9 +559,64 @@ class PublicChatHandler(BaseHTTPRequestHandler):
         self.server.application.rate_request(peer)
         return peer
 
+    def _events(self, identifier: str, client: str) -> None:
+        application = self.server.application
+        assert application is not None
+        if not application.enable_streaming:
+            raise ServiceError(404, "Streaming is not enabled")
+        cursors = self.headers.get_all("Last-Event-ID", [])
+        if len(cursors) > 1 or (cursors and (not cursors[0].isascii() or not cursors[0].isdigit() or len(cursors[0]) > 16 or int(cursors[0]) > 2**53 - 1)):
+            raise ServiceError(400, "Invalid streaming cursor")
+        progress = application.wait_progress(identifier)
+        self.server.acquire_stream(client)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            deadline = time.monotonic() + self.server.stream_lease
+            after = None
+            while True:
+                status = progress["status"]
+                if status in ("complete", "failed"):
+                    payload = {"version": 1, "seq": progress["seq"]}
+                    event = status
+                elif progress["seq"] != after:
+                    payload, event = progress, "progress"
+                else:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                    payload, event = None, None
+                if payload is not None:
+                    encoded = (f'id: {progress["seq"]}\nevent: {event}\ndata: ' + json.dumps(payload, ensure_ascii=False, allow_nan=False) + '\n\n').encode("utf-8")
+                    if len(encoded) > MAX_STREAM_FRAME_BYTES:
+                        return
+                    self.wfile.write(encoded)
+                    self.wfile.flush()
+                if status in ("complete", "failed") or application._closed:
+                    return
+                after = progress["seq"]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                progress = application.wait_progress(identifier, after, min(self.server.stream_heartbeat, remaining))
+        except (ServiceError, BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            # A started stream cannot be replaced by a JSON HTTP response.
+            pass
+        except Exception:
+            pass
+        finally:
+            self.close_connection = True
+            self.server.release_stream(client)
+
     def do_GET(self) -> None:
         try:
-            self._client()
+            client = self._client()
             assert self.server.application is not None
             parsed = urlsplit(self.path)
             if parsed.query or parsed.fragment:
@@ -481,9 +628,15 @@ class PublicChatHandler(BaseHTTPRequestHandler):
                 self._json(200, self.server.application.health())
             elif parsed.path.startswith("/api/jobs/"):
                 identifier = parsed.path.removeprefix("/api/jobs/")
+                streaming = identifier.endswith("/events")
+                if streaming:
+                    identifier = identifier.removesuffix("/events")
                 if not identifier or len(identifier) > 64 or not all(character.isascii() and (character.isalnum() or character in "_-") for character in identifier):
                     raise ServiceError(404, "Not found")
-                self._json(200, self.server.application.job(identifier))
+                if streaming:
+                    self._events(identifier, client)
+                else:
+                    self._json(200, self.server.application.job(identifier))
             else:
                 raise ServiceError(404, "Not found")
         except ServiceError as exc:
@@ -602,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="Loopback listen address; expose only through a local reverse proxy")
     parser.add_argument("--port", type=int, default=8899)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--enable-streaming", action="store_true", help="Enable provisional reply progress and SSE subscriptions")
     parser.add_argument("--threads", type=int)
     parser.add_argument("--public-origin", action="append", default=[], help="Allowed external HTTP(S) origin; repeat for aliases")
     parser.add_argument("--trusted-proxy", action="append", default=[], help="Loopback proxy allowed to set X-Real-IP; repeat as needed")
@@ -625,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     try:
         runner = Gpt2Runner(offline=arguments.offline, threads=arguments.threads)
-        server.application = PublicChatApplication(runner, limits)
+        server.application = PublicChatApplication(runner, limits, enable_streaming=arguments.enable_streaming)
         print(f"GPT-2 public service ready on {arguments.host}:{server.server_port}; chat state stays in browsers", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:

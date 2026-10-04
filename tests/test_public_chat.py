@@ -12,10 +12,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gpt2_local.public_chat import (
-    MAX_BODY_BYTES, GenerationTimeout, Limits, PublicChatApplication, PublicChatServer,
+    MAX_BODY_BYTES, GenerationTimeout, Limits, PublicChatApplication, PublicChatServer, PublicChatHandler,
     ServiceError, _DeadlineModel, _PublicRunner, available_memory_gib, main, normalize_origin,
 )
-from gpt2_local.runtime import GenerationResult, GenerationSettings
+from gpt2_local.runtime import GenerationResult, GenerationSettings, SampledToken
 
 
 class FakeRunner:
@@ -418,6 +418,288 @@ class PublicHTTPTests(unittest.TestCase):
         finally:
             for _ in range(held):
                 self.server._handler_slots.release()
+
+
+class FakeProgressDecoder:
+    def __init__(self, backend: object) -> None:
+        self.text = ""
+
+    def push(self, token_id: int) -> str:
+        self.text += {1: " A", 2: " deterministic reply."}[token_id]
+        return self.text
+
+
+class FakeStreamingRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tokenizer = types.SimpleNamespace(backend_tokenizer=object())
+        self.observed = threading.Event()
+        self.finish = threading.Event()
+
+    def generate_result(self, prompt: str, settings: GenerationSettings, **options: object) -> GenerationResult:
+        self.calls.append((prompt, settings))
+        self.started.set()
+        if not self.release.wait(3):
+            raise RuntimeError("Fake prefill expired")
+        observer = options.get("on_token")
+        if observer:
+            observer(SampledToken(1, 1, 0.01))
+        self.observed.set()
+        if not self.finish.wait(3):
+            raise RuntimeError("Fake decoding expired")
+        if self.failure:
+            raise self.failure
+        if observer:
+            observer(SampledToken(2, 2, 0.02))
+        return GenerationResult(text=" A deterministic reply.", original_input_tokens=len(prompt),
+                                input_tokens=len(prompt), output_tokens=2, output_token_ids=(1, 2),
+                                stop_reason="max_new_tokens", elapsed_seconds=0.03,
+                                tokens_per_second=2 / 0.03, prompt_truncated=False, cold_start_included=False)
+
+
+class StreamingHTTPTests(unittest.TestCase):
+    request = PublicHTTPTests.request
+
+    def setUp(self) -> None:
+        decoder = patch("gpt2_local.public_chat.ReplyStreamDecoder", FakeProgressDecoder)
+        decoder.start()
+        self.addCleanup(decoder.stop)
+        self.runner = FakeStreamingRunner()
+        self.app = PublicChatApplication(self.runner, enable_streaming=True)  # type: ignore[arg-type]
+        self.server = PublicChatServer(("127.0.0.1", 0), self.app, public_origins=("https://gpt.example",),
+                                      trusted_proxies=("127.0.0.1",), stream_heartbeat=0.03, stream_lease=1)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.streams = []
+        self.addCleanup(self.cleanup)
+        self.settings = {"max_new_tokens": 32, "temperature": 0.8, "seed": "42"}
+        self.archive = self.app.new({"example_rounds": 0, "date": "2026-10-03", "settings": self.settings})["chat"]
+
+    def cleanup(self) -> None:
+        self.runner.release.set()
+        self.runner.finish.set()
+        for connection, response in self.streams:
+            response.close()
+            connection.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(2)
+
+    def submit(self, client="192.0.2.1") -> dict:
+        return self.app.submit({"chat": self.archive, "message": "Hello", "settings": self.settings}, client)
+
+    def stream(self, identifier: str, client="192.0.2.1", cursor=None):
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        headers = {"Host": "gpt.example", "Origin": "https://gpt.example", "X-Real-IP": client}
+        if cursor is not None:
+            headers["Last-Event-ID"] = str(cursor)
+        connection.request("GET", f"/api/jobs/{identifier}/events", headers=headers)
+        response = connection.getresponse()
+        self.streams.append((connection, response))
+        return response
+
+    @staticmethod
+    def frame(response):
+        lines = []
+        while True:
+            line = response.readline()
+            if line in (b"\n", b"\r\n", b""):
+                return b"".join(lines).decode("utf-8")
+            lines.append(line)
+
+    def progress(self, response):
+        while True:
+            frame = self.frame(response)
+            if frame.startswith("id:"):
+                payload = json.loads(frame.split("data: ", 1)[1])
+                return frame, payload
+            self.assertTrue(frame, "stream ended before an event")
+
+    def test_early_flush_heartbeat_progress_reconnect_and_final_archive(self) -> None:
+        self.runner.release.clear()
+        before = copy.deepcopy(self.archive)
+        job = self.submit()
+        identifier = job["job_id"]
+        self.assertTrue(self.runner.started.wait(1))
+        stream = self.stream(identifier)
+        self.assertEqual(stream.status, 200)
+        self.assertEqual(stream.getheader("Content-Type"), "text/event-stream; charset=utf-8")
+        self.assertIsNone(stream.getheader("Content-Length"))
+        frame, initial = self.progress(stream)
+        self.assertEqual(initial["generated_tokens"], 0)
+        self.assertEqual(self.frame(stream), ": heartbeat\n")
+        self.runner.release.set()
+        self.assertTrue(self.runner.observed.wait(1))
+        frame, partial = self.progress(stream)
+        self.assertEqual(partial["reply_text"], " A")
+        self.assertGreater(partial["seq"], initial["seq"])
+        self.assertNotIn("state", self.app.job(identifier))
+        self.assertEqual(self.archive, before)
+        self.assertEqual(self.request("/api/health")[0], 200)
+        resumed = self.stream(identifier, cursor=partial["seq"])
+        _, latest = self.progress(resumed)
+        self.assertEqual(latest, partial)
+        self.runner.finish.set()
+        while True:
+            terminal, payload = self.progress(resumed)
+            if "event: complete\n" in terminal:
+                break
+        self.assertEqual(set(payload), {"version", "seq"})
+        result = self.app.job(identifier)
+        self.assertEqual(result["state"]["turns"][-1]["assistant"], " A deterministic reply.")
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(result["delivery"]["decoding_tokens_per_second"], 100)
+        self.assertLessEqual(result["delivery"]["first_token_seconds"], result["delivery"]["first_visible_seconds"])
+
+    def test_subscriber_caps_leave_health_available_and_release_slots(self) -> None:
+        job = self.submit()
+        identifier = job["job_id"]
+        self.assertTrue(self.runner.observed.wait(1))
+        first = self.stream(identifier)
+        second = self.stream(identifier)
+        self.progress(first)
+        self.progress(second)
+        self.assertEqual(self.request(f"/api/jobs/{identifier}/events")[0], 503)
+        third = self.stream(identifier, "192.0.2.2")
+        fourth = self.stream(identifier, "192.0.2.3")
+        self.progress(third)
+        self.progress(fourth)
+        self.assertEqual(self.request(f"/api/jobs/{identifier}/events", headers={"X-Real-IP": "192.0.2.4"})[0], 503)
+        self.assertEqual(self.request("/api/health")[0], 200)
+        self.runner.finish.set()
+        for response in (first, second, third, fourth):
+            response.read()
+        deadline = time.monotonic() + 1
+        while self.server._stream_clients and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(self.server._stream_clients)
+
+    def test_failed_generation_notifies_without_committing_partial_archive(self) -> None:
+        before = copy.deepcopy(self.archive)
+        job = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        response = self.stream(job["job_id"])
+        _, partial = self.progress(response)
+        self.assertEqual(partial["reply_text"], " A")
+        self.runner.failure = RuntimeError("private callback failure")
+        self.runner.finish.set()
+        terminal, unused = self.progress(response)
+        self.assertIn("event: failed\n", terminal)
+        result = self.app.job(job["job_id"])
+        self.assertNotIn("state", result)
+        self.assertNotIn("private", result["error"])
+        self.assertEqual(self.archive, before)
+
+    def test_lease_and_disconnect_do_not_cancel_or_resubmit_generation(self) -> None:
+        self.server.stream_lease = 0.08
+        job = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        response = self.stream(job["job_id"])
+        response.read()
+        self.assertEqual(self.app.job(job["job_id"])["status"], "running")
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertFalse(self.server._stream_clients)
+
+    def test_cursor_validation_missing_job_and_disabled_capability(self) -> None:
+        job = self.submit()
+        for cursor in ("-1", "1.5", "9" * 30, "\N{ARABIC-INDIC DIGIT ONE}"):
+            if not cursor.isascii():
+                # HTTP headers are Latin-1; test the application-facing ASCII
+                # guard with a representable non-ASCII numeral instead.
+                cursor = "\xb2"
+            response = self.stream(job["job_id"], cursor=cursor)
+            self.assertEqual(response.status, 400)
+            response.read()
+        self.assertEqual(self.request("/api/jobs/missing/events")[0], 404)
+        self.app.enable_streaming = False
+        self.assertEqual(self.request(f"/api/jobs/{job['job_id']}/events")[0], 404)
+        self.assertFalse(self.app.health()["capabilities"]["streaming"])
+        self.assertEqual(self.request(f"/api/jobs/{job['job_id']}/events", headers={"Origin": "https://wrong.example"})[0], 403)
+
+    def test_queue_position_changes_get_new_revisions(self) -> None:
+        first = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        second = self.submit("192.0.2.2")
+        third = self.submit("192.0.2.3")
+        original = self.app.wait_progress(third["job_id"])
+        self.assertEqual(original["position"], 2)
+        self.runner.finish.set()
+        deadline = time.monotonic() + 1
+        while self.app.job(first["job_id"])["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.005)
+        changed = self.app.wait_progress(third["job_id"])
+        self.assertGreater(changed["seq"], original["seq"])
+
+    def test_stalled_socket_writer_does_not_block_inference_or_health(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        class SlowHandler(PublicChatHandler):
+            def _events(handler, identifier, client):
+                original = handler.wfile
+                class Writer:
+                    def write(writer, content):
+                        if content.startswith(b"id:"):
+                            entered.set()
+                            release.wait(2)
+                            raise TimeoutError("Simulated stalled socket")
+                        return original.write(content)
+                    def __getattr__(writer, name):
+                        return getattr(original, name)
+                handler.wfile = Writer()
+                try:
+                    super()._events(identifier, client)
+                finally:
+                    handler.wfile = original
+        self.server.RequestHandlerClass = SlowHandler
+        job = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        response = self.stream(job["job_id"])
+        self.assertTrue(entered.wait(1))
+        self.runner.finish.set()
+        deadline = time.monotonic() + 1
+        while self.app.job(job["job_id"])["status"] == "running" and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(self.app.job(job["job_id"])["status"], "complete")
+        self.assertEqual(self.request("/api/health")[0], 200)
+        release.set()
+        self.assertEqual(response.read(), b"")
+        self.assertFalse(self.server._stream_clients)
+
+    def test_oversized_frame_closes_subscription_but_generation_continues(self) -> None:
+        job = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        with patch("gpt2_local.public_chat.MAX_STREAM_FRAME_BYTES", 32):
+            response = self.stream(job["job_id"])
+            self.assertEqual(response.read(), b"")
+        self.assertFalse(self.server._stream_clients)
+        self.assertEqual(self.app.job(job["job_id"])["status"], "running")
+        self.runner.finish.set()
+
+    def test_queued_expiry_and_shutdown_release_waiting_subscribers(self) -> None:
+        clock = Clock()
+        clock.now = time.monotonic()
+        self.app.clock = clock
+        self.app.limits = Limits(queue_ttl_seconds=10)
+        first = self.submit()
+        self.assertTrue(self.runner.observed.wait(1))
+        queued = self.submit("192.0.2.2")
+        response = self.stream(queued["job_id"], "192.0.2.2")
+        self.progress(response)
+        with self.app._condition:
+            clock.now += 11
+            self.app._condition.notify_all()
+        frame, unused = self.progress(response)
+        self.assertIn("event: failed\n", frame)
+        self.assertEqual(self.app.job(queued["job_id"])["status"], "failed")
+        running = self.stream(first["job_id"])
+        self.progress(running)
+        self.app.close(timeout=0)
+        running.read()
+        deadline = time.monotonic() + 1
+        while self.server._stream_clients and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(self.server._stream_clients)
+        self.assertEqual(len(self.runner.calls), 1)
 
 
 class PublicConfigurationTests(unittest.TestCase):

@@ -12,6 +12,7 @@ from gpt2_local.chat import (
     MODEL_MARKER,
     MESSAGE_DELIMITER_PATTERN,
     ChatApplication,
+    ChatHandler,
     ChatServer,
     ChatSession,
     Round,
@@ -306,6 +307,53 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         self.assertEqual(resumed["last_generation"]["requested_seed"], seed)
         self.assertEqual(resumed["last_generation"]["seed"], seed)
         self.assert_exact_blocks(resumed)
+
+    def test_followup_export_during_response_write_uses_released_lock_and_stable_snapshot(self) -> None:
+        session = self.fixture()
+        writing, continue_write = threading.Event(), threading.Event()
+        replies: list[tuple[int, dict[str, object]]] = []
+        failures: list[Exception] = []
+        original_send = ChatHandler._send
+        seed = str(2**63 - 1)
+
+        def delayed_send(handler: ChatHandler, status: int, content: bytes, content_type: str) -> None:
+            if handler.path == "/api/message":
+                writing.set()
+                if not continue_write.wait(timeout=2):
+                    raise RuntimeError("synthetic response write wait expired")
+            original_send(handler, status, content, content_type)
+
+        def generate() -> None:
+            try:
+                replies.append(self.request("POST", "/api/message", {
+                    "session_id": session.session_id, "message": "Synthetic question?",
+                    "settings": {"max_new_tokens": 40, "seed": seed},
+                }))
+            except Exception as error:
+                failures.append(error)
+
+        with mock.patch.object(ChatHandler, "_send", delayed_send):
+            request_thread = threading.Thread(target=generate, daemon=True)
+            request_thread.start()
+            try:
+                self.assertTrue(writing.wait(timeout=1))
+                status, archive = self.request("POST", "/api/export", {
+                    "session_id": session.session_id,
+                    "settings": {"max_new_tokens": 67, "temperature": 0.35, "seed": "7"},
+                })
+                self.assertEqual(status, 200)
+                self.assertEqual(archive["settings"]["seed"], "7")
+            finally:
+                continue_write.set()
+                request_thread.join(timeout=2)
+        self.assertFalse(request_thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(replies[0][0], 200)
+        # A concurrent control update cannot alter the already serialized reply.
+        self.assertEqual(replies[0][1]["settings"]["seed"], seed)
+        self.assertEqual(replies[0][1]["settings"]["max_new_tokens"], 40)
+        self.assertEqual(replies[0][1]["last_generation"]["seed"], seed)
+        self.assertEqual(session.settings.seed, 7)
 
     def test_generation_failure_does_not_change_saved_controls_or_historical_metadata(self) -> None:
         session = self.fixture()

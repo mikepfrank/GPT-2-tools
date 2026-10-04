@@ -834,3 +834,92 @@ GPT-2 **43867**, Caddy **4341**, Astra **4149**, and Arcturus **4313**.
 Evidence/scripts remain ignored under `outputs/deploy`, including
 `query-params-smoke-20261003.json`. This verifies URL handling, not streaming or
 new model-performance behavior.
+
+## Local streaming preview (2026-10-03 CDT)
+
+Implementation and checks ran only in `.worktrees/gpt2-streaming`, branch
+`codex/gpt2-streaming`, based on `e5971db` plus design `aeff42e` and the public
+query-handling cherry-pick `4b5cf86`. No production service, Caddy setting,
+shared editable installation, or other worktree was changed for streaming.
+Streaming is opt-in through `--enable-streaming`; the previous polling path
+remains the default. A separate optional observer reports raw sampled tokens,
+without changing sampling arguments or RNG use. Safe cumulative display text
+withholds incomplete Unicode and possible next-speaker delimiters. The final
+validated result alone commits the chat archive.
+
+The full WSL suite passed **197 Python tests** in 13.525 seconds, including
+three cached-tokenizer checks without model weights. The public HTTP subset
+also passed **41 tests** on Windows. The final frontend suite passed **30
+JavaScript tests**. Synthetic coverage includes token/prompt accounting,
+transactional failures, Unicode and split SSE framing, heartbeat delivery,
+bounded subscriptions, stalled writers, expiry/shutdown, reconnect/reload,
+polling fallback, export isolation, regeneration, seed wrapping, browser
+back/forward restoration, and result-body timeouts. A deterministic local-chat
+regression also verifies that response transmission no longer retains the
+generation lock, which could previously reject an immediate follow-up request.
+PowerShell parsing and mocked WSL argument forwarding passed for the new
+`streaming-preview.ps1` launcher; that foreground launcher was not used to
+load another model while the durable preview was resident.
+
+At **2026-10-04 02:19:45–02:20:34 UTC** (October 3 CDT), a private harness
+bound `127.0.0.1:8891` before loading exactly one offline GPT-2 XL runner.
+The runtime was Python **3.12.3**, PyTorch **2.14.1+cpu**, Transformers
+**5.18.0**, Tokenizers **0.23.2**, and **two Torch threads** on WSL Ubuntu.
+All **1,557,611,200 parameters** were CPU `torch.float32`, with the pinned
+revision `15ea56dee5df4983c59b2538573817e1667135e2`. The expected checkpoint
+digest was recorded; the earlier full-file digest verification was not repeated.
+Pre-load available RAM exceeded the 8 GiB guard. The process was started in
+a separate session with redirected logs and remains the preview server.
+
+Four sequential trials used the exact message **"Tell me one interesting fact
+about stars."**, zero examples, fixed date **2026-10-03**, seed **42**, and a
+**32-token allowance**. Greedy temperature **0** and sampled temperature
+**0.8** each ran once with streaming off and once with streaming on, using the
+same runner. Each pair matched the complete input prompt, settings, input IDs,
+raw output IDs, final text, stop reason, counts, and canonical archive after
+excluding only `exported_at`, `elapsed_seconds`, and `cold_start_included`.
+Observer IDs/counts exactly matched raw results; every safe display snapshot
+was a monotonic prefix of final text. Export/import round trips also matched
+except their timestamps.
+
+| Trial | Input / generated tokens | Generation seconds | First safe text seconds |
+| --- | ---: | ---: | ---: |
+| Greedy, stream off, first process request | 143 / 9 | 11.248 | Not observed |
+| Greedy, stream on | 143 / 9 | 4.883 | 3.144 |
+| Sampled, stream off | 143 / 11 | 4.172 | Not observed |
+| Sampled, stream on | 143 / 11 | 4.212 | 2.153 |
+| Near context, stream on | 992 / 7 | 18.012 | No safe text |
+
+These are short operational observations. The first request includes page-in
+and kernel initialization; OS cache state was not controlled. First-text
+times start at `model.generate()` and exclude queue/browser/network latency.
+The near-context message began "Consider reversible computing, physical
+information, and logical reversibility." and repeated " physics" until the
+exact prompt contained 992 tokens. It stopped on a new-speaker delimiter
+after seven tokens, all withheld from provisional display. It verifies this
+context/stop path, not a 32-token near-context throughput benchmark. During
+that trial, lifetime peak RSS reached **7,627,063,296 bytes (7.103 GiB)**;
+the measured process CPU time was about two logical CPUs. Swap remained
+unused. These laptop measurements do not establish Lightsail streaming latency
+or public capacity.
+
+After validation, the harness attached the **same runner** to one inference
+worker, with streaming enabled and a 256-token service cap. The live in-app
+browser initialized **http://localhost:8891/** and completed the same sampled
+star prompt. Regeneration advanced seed 42 to 43. A second regeneration with
+seed 44 visibly displayed the first sampled token, **" Tell"**; reloading
+while it was pending resumed at **" Tell me how"** and completed at 15 raw
+tokens with the final seed still 44. Controls unlocked and no browser warning
+or error was logged. This confirms real provisional output and pending-page
+recovery, in addition to the synthetic no-resubmission tests.
+
+Private evidence remains ignored under `outputs/deploy`, including
+`streaming-preview-parity-20261004T021945Z-341.json` (full prompts, settings,
+token arrays, observer snapshots, archives, resources and source-file hashes),
+`streaming-preview.log`, and `streaming-preview-active-20261003.jpg`.
+The harness's WSL Git lookup returned null HEAD/status because this is a
+Windows-managed worktree; its explicit source hashes provide tested-source
+identity, supplemented by Windows Git metadata. The preview launched before
+the implementation commit, so source-file hashes are the loaded-code evidence.
+No source change or model restart was needed to commit the verified files.
+The owner has not yet accepted this candidate for production.

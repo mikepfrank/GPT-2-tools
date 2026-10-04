@@ -46,18 +46,23 @@ function storage(values = new Map()) {
 }
 
 function fakeElement(id) {
-  return {
+  const element = {
     id, value: "", textContent: "", disabled: false, hidden: false, children: [],
-    files: [], listeners: {}, scrollTop: 0, scrollHeight: 100,
+    files: [], listeners: {}, scrollTop: 0, scrollHeight: 100, clientHeight: 100,
     classList: {toggle() {}}, setAttribute() {},
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
     appendChild(child) { this.children.push(child); },
     replaceChildren(fragment) {
       this.children = fragment.children;
-      this.textContent = fragment.children.map((child) => child.textContent).join("");
+      this._textContent = "";
     },
     focus() {}, click() {}, remove() {}
   };
+  Object.defineProperty(element, "textContent", {
+    get() { return (this._textContent || "") + this.children.map((child) => child.textContent).join(""); },
+    set(value) { this._textContent = String(value); this.children = []; }
+  });
+  return element;
 }
 
 function indexedDB(records, failWrites = false) {
@@ -111,7 +116,7 @@ function browser(options = {}) {
   const local = options.local || storage();
   const nodes = new Map();
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], fakeElement(match[1]));
-  for (const id of ["last-prompt", "archive-notes", "storage-warning", "pending-note", "import-file"]) {
+  for (const id of ["last-prompt", "archive-notes", "storage-warning", "pending-note", "import-file", "progress-info"]) {
     nodes.get(id).hidden = true;
   }
   nodes.get("temperature").value = "0.8";
@@ -130,7 +135,9 @@ function browser(options = {}) {
   const window = {
     sessionStorage: session, localStorage: local, indexedDB: options.noStorage ? undefined : indexedDB(records, options.failWrites),
     crypto: {randomUUID: () => "tab-" + (options.id || "A") + "-" + (++uid)},
-    addEventListener() {}, prompt: () => "export.json"
+    listeners: {},
+    addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
+    prompt: () => "export.json"
   };
   if (options.channels) window.BroadcastChannel = options.channels;
   if (options.throwStorageAccess) {
@@ -139,10 +146,10 @@ function browser(options = {}) {
   }
   const timers = new Set();
   const context = vm.createContext({
-    window, document, AbortController, Uint32Array, Blob, URL, console,
+    window, document, AbortController, Uint32Array, Uint8Array, TextDecoder, Blob, URL, console,
     setTimeout(callback, ms) {
       // Accelerate UI polling, but do not accidentally expire fetch aborts.
-      const handle = setTimeout(callback, ms === 20000 ? 20000 : Math.min(ms, 2));
+      const handle = setTimeout(callback, ms === 20000 ? (options.watchdogMs || 20000) : Math.min(ms, 2));
       timers.add(handle);
       return handle;
     },
@@ -153,6 +160,7 @@ function browser(options = {}) {
       const response = options.respond ? await options.respond(url, body, params) :
         url === "/api/health" ? {limits: {max_reply_tokens: 256}} : state();
       if (response instanceof Error) throw response;
+      if (response.streamResponse) return response.streamResponse;
       return {ok: !response.httpStatus, status: response.httpStatus || 200,
         json: async () => response.payload || response};
     }
@@ -161,7 +169,10 @@ function browser(options = {}) {
   return {
     nodes, records, session, local, calls, context, boot: context.boot,
     run: (expression) => vm.runInContext(expression, context),
-    stop() { for (const timer of timers) clearTimeout(timer); }
+    stop() {
+      vm.runInContext("pageLeaving = true; if (activeStreamAbort) activeStreamAbort.abort();", context);
+      for (const timer of timers) clearTimeout(timer);
+    }
   };
 }
 
@@ -555,4 +566,492 @@ test("unavailable, denied and full browser storage show a persistent export warn
       assert.equal(b.run("exportArchive().settings.seed"), "9223372036854775807");
     } finally { b.stop(); }
   }
+});
+
+function wire(type, seq, values = {}, ending = "\n") {
+  const payload = {version: 1, seq, ...values};
+  return "id: " + seq + ending + "event: " + type + ending +
+    "data: " + JSON.stringify(payload) + ending + ending;
+}
+
+function progress(seq, text, count = seq) {
+  return wire("progress", seq, {
+    status: "running", position: 0, generated_tokens: count, reply_text: text
+  });
+}
+
+function streamed(parts, onRead) {
+  let index = 0;
+  return {streamResponse: {
+    ok: true, status: 200, headers: {get: () => "text/event-stream; charset=utf-8"},
+    body: {getReader: () => ({
+      async read() {
+        if (onRead) await onRead(index);
+        if (index === parts.length) return {done: true};
+        const item = typeof parts[index] === "function" ? await parts[index++]() : parts[index++];
+        return {done: false, value: typeof item === "string" ? new TextEncoder().encode(item) : item};
+      },
+      cancel: async () => {}, releaseLock() {}
+    })}
+  }};
+}
+
+function displayFor(value) {
+  return {
+    context_text: value.context_text, context_blocks: structuredClone(value.context_blocks),
+    context_tokens: value.context_tokens, retained_example_rounds: value.retained_example_rounds,
+    dropped_rounds: value.dropped_rounds
+  };
+}
+
+test("SSE parser accepts every UTF-8 byte split, CRLF/LF/CR framing and comments", async () => {
+  const b = browser();
+  try {
+    await b.boot;
+    const expected = {version: 1, seq: 7, status: "running", position: 0,
+      generated_tokens: 7, reply_text: " 漢字🙂\n<script>literal</script>"};
+    for (const ending of ["\n", "\r\n", "\r"]) {
+      const bytes = new TextEncoder().encode(": heartbeat" + ending + ending +
+        wire("progress", 7, expected, ending));
+      for (let split = 0; split <= bytes.length; split++) {
+        b.run("globalThis.events = []; globalThis.parser = createSseParser((event) => events.push(event), 4096);");
+        b.context.first = bytes.slice(0, split);
+        b.context.second = bytes.slice(split);
+        b.run("parser.push(first); parser.push(second); parser.finish();");
+        assert.deepEqual(JSON.parse(b.run("JSON.stringify(events)")), [{type: "progress", payload: expected}]);
+      }
+    }
+  } finally { b.stop(); }
+});
+
+test("SSE byte bound applies per unfinished frame, allowing multiple valid frames in an oversized read chunk", async () => {
+  const b = browser();
+  try {
+    await b.boot;
+    const text = "x".repeat(600000);
+    b.context.bytes = new TextEncoder().encode(progress(1, text, 1) + progress(2, text, 2));
+    assert.ok(b.context.bytes.byteLength > 1024 * 1024);
+    b.run("globalThis.events = []; globalThis.parser = createSseParser((event) => events.push(event)); parser.push(bytes);");
+    assert.equal(b.run("events.length"), 2);
+    b.context.bytes = new TextEncoder().encode(progress(3, "漢".repeat(400000), 3));
+    assert.throws(() => b.run("parser.push(bytes)"), /1 MiB/);
+    b.context.bytes = new TextEncoder().encode("event: complete\nid: 4\ndata: {\"version\":1,\"seq\":5}\n\n");
+    b.run("globalThis.parser = createSseParser(() => {});");
+    assert.throws(() => b.run("parser.push(bytes)"), /invalid event/);
+    b.context.bytes = new Uint8Array([100, 97, 116, 97, 58, 32, 0xff, 10]);
+    b.run("globalThis.parser = createSseParser(() => {});");
+    assert.throws(() => b.run("parser.push(bytes)"));
+  } finally { b.stop(); }
+});
+
+test("streamed reply remains provisional and exportable archive unchanged until final GET commits", async () => {
+  const original = state("committed");
+  const preview = state("exact submitted prompt");
+  const final = state("canonical completed reply", true);
+  let release;
+  const terminal = new Promise((resolve) => { release = resolve; });
+  const b = browser({respond: (url, body) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}, limits: {max_reply_tokens: 256}};
+    if (url === "/api/new") return original;
+    if (url === "/api/preview") return preview;
+    if (url === "/api/message") {
+      const recorded = [...b.records.values()].at(-1).pending;
+      assert.equal(recorded.job_id, null);
+      assert.deepEqual(recorded.submitted_settings, body.settings);
+      assert.deepEqual(Object.keys(recorded.display).sort(),
+        ["context_blocks", "context_text", "context_tokens", "dropped_rounds", "retained_example_rounds"]);
+      assert.equal(recorded.submitted_settings.temperature, 0.6);
+      assert.equal(recorded.submitted_settings.max_new_tokens, 16);
+      return {job_id: "stream-one", status: "running"};
+    }
+    if (url === "/api/jobs/stream-one/events") {
+      assert.equal([...b.records.values()].at(-1).pending.job_id, "stream-one");
+      return streamed([progress(1, " partial 漢🙂", 1), () => terminal]);
+    }
+    if (url === "/api/jobs/stream-one") return {status: "complete", state: final};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    b.nodes.get("temperature").value = "0.6";
+    b.nodes.get("reply-limit").value = "16";
+    const running = b.run("generate()");
+    await until(() => b.run("provisionalText") === " partial 漢🙂");
+    assert.equal(b.nodes.get("context").textContent, preview.context_text + " partial 漢🙂");
+    assert.equal(b.run("committed.context_text"), original.context_text);
+    assert.deepEqual(JSON.parse(b.run("JSON.stringify(exportArchive().blocks)")), original.chat.blocks);
+    assert.deepEqual([...b.records.values()].at(-1).state.chat, original.chat);
+    assert.equal("reply_text" in [...b.records.values()].at(-1).pending, false);
+    assert.match(b.nodes.get("progress-info").textContent, /not yet saved/);
+    release(wire("complete", 2));
+    await running;
+    assert.equal(b.nodes.get("context").textContent, final.context_text);
+    assert.equal(b.run("pending"), null);
+    assert.equal(b.nodes.get("progress-info").hidden, true);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.calls.filter((call) => call.url === "/api/jobs/stream-one").length, 1);
+  } finally { b.stop(); }
+});
+
+test("reconnect preserves partial text, uses advisory cursor, ignores duplicates and stale revisions, and retries terminal GET only", async () => {
+  let streams = 0;
+  let polls = 0;
+  const final = state("reconnected final", true);
+  const b = browser({respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("before");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "reconnect", status: "running"};
+    if (url === "/api/jobs/reconnect/events") {
+      if (++streams === 1) return streamed([progress(2, " A", 2)]);
+      assert.equal(params.headers["Last-Event-ID"], "2");
+      assert.equal(b.nodes.get("context").textContent, "prepared A");
+      return streamed([
+        progress(1, "stale", 1), progress(2, "duplicate altered text", 2),
+        progress(4, " AB", 3), wire("complete", 5)
+      ]);
+    }
+    if (url === "/api/jobs/reconnect") {
+      if (++polls === 1) return {status: "running", progress: {
+        version: 1, seq: 2, status: "running", position: 0, generated_tokens: 2, reply_text: " A"
+      }};
+      if (polls === 2) {
+        assert.equal(b.run("provisionalText"), " AB");
+        return new Error("temporary result retrieval failure");
+      }
+      return {status: "complete", state: final};
+    }
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+    assert.equal(streams, 2);
+    assert.equal(polls, 3);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.nodes.get("context").textContent, final.context_text);
+  } finally { b.stop(); }
+});
+
+test("reload accepts current snapshot despite an older saved cursor and freezes input separately from UI controls", async () => {
+  const original = state("committed old reply", true);
+  const prepared = state("recorded regeneration input");
+  const records = new Map([["saved", snapshot(original, {
+    pending: {
+      job_id: "restore-stream", regenerated: true, message: "unsent draft", seq: 999,
+      display: {...displayFor(prepared), turns: ["must not be retained"]},
+      submitted_settings: {temperature: 0.7, max_new_tokens: 32, seed: "9223372036854775807"},
+      regeneration_settings: {temperature: 0.7, max_new_tokens: 32, seed: "0"}
+    }
+  })]]);
+  let release;
+  const terminal = new Promise((resolve) => { release = resolve; });
+  const b = browser({
+    records, session: storage(new Map([["gpt2-public-chat-tab-v1", "saved"]])),
+    respond: (url, body, params) => {
+      if (url === "/api/health") return {capabilities: {streaming: true}};
+      if (url === "/api/jobs/restore-stream/events") {
+        assert.equal(params.headers["Last-Event-ID"], undefined);
+        return streamed([progress(2, " alternative", 2), () => terminal]);
+      }
+      if (url === "/api/jobs/restore-stream") return {status: "failed", error: "deadline"};
+      throw new Error("Unexpected POST");
+    }
+  });
+  try {
+    await until(() => b.run("provisionalText") === " alternative");
+    assert.equal(b.nodes.get("context").textContent, prepared.context_text + " alternative");
+    assert.equal(b.nodes.get("temperature").value, "0.65");
+    assert.match(b.nodes.get("progress-info").textContent, /seed 0/);
+    assert.equal(b.nodes.get("seed").value, "9223372036854775807");
+    assert.equal("turns" in [...records.values()].at(-1).pending.display, false);
+    release(wire("failed", 3));
+    await b.boot;
+    assert.equal(b.nodes.get("context").textContent, original.context_text);
+    assert.equal(b.nodes.get("message").value, "unsent draft");
+    assert.deepEqual(JSON.parse(b.run("JSON.stringify(committed.chat)")), original.chat);
+    assert.equal(b.nodes.get("seed").value, "9223372036854775807");
+    assert.equal(b.calls.filter((call) => call.method === "POST").length, 0);
+  } finally { b.stop(); }
+});
+
+test("legacy or invalid pending display remains final-only even when streaming is available", async () => {
+  for (const display of [undefined, {context_text: "wrong", context_tokens: 1}]) {
+    let polls = 0;
+    const original = state("committed original");
+    const records = new Map([["saved", snapshot(original, {
+      pending: {job_id: "legacy-job", regenerated: false, message: "unsent draft", display}
+    })]]);
+    const b = browser({
+      records, session: storage(new Map([["gpt2-public-chat-tab-v1", "saved"]])),
+      respond: (url) => {
+        if (url === "/api/health") return {capabilities: {streaming: true}};
+        if (url === "/api/jobs/legacy-job") {
+          assert.equal(b.nodes.get("context").textContent, original.context_text);
+          return ++polls === 1 ? {status: "running", progress: {
+            version: 1, seq: 1, status: "running", position: 0, generated_tokens: 1, reply_text: "wrong-context reply"
+          }} : {status: "complete", state: state("legacy final", true)};
+        }
+        throw new Error("Must not open a stream");
+      }
+    });
+    try {
+      await b.boot;
+      assert.equal(polls, 2);
+      assert.equal(b.calls.some((call) => call.url.endsWith("/events")), false);
+      assert.equal(b.run("pending"), null);
+    } finally { b.stop(); }
+  }
+});
+
+test("subscription capacity and malformed frames fall back to progress polling for the same job", async () => {
+  for (const badStream of [
+    {httpStatus: 503, payload: {error: "subscription capacity"}},
+    streamed(["data: not-json\nevent: progress\n\n"]),
+    streamed([": " + "x".repeat(1024 * 1024) + "\n\n"])
+  ]) {
+    let polls = 0;
+    let streams = 0;
+    const b = browser({respond: (url) => {
+      if (url === "/api/health") return {capabilities: {streaming: true}};
+      if (url === "/api/new") return state("committed");
+      if (url === "/api/preview") return state("prepared");
+      if (url === "/api/message") return {job_id: "fallback", status: "running"};
+      if (url === "/api/jobs/fallback/events") { streams++; return badStream; }
+      if (url === "/api/jobs/fallback") {
+        if (++polls === 1) return {status: "running", progress: {
+          version: 1, seq: 3, status: "running", position: 0, generated_tokens: 3, reply_text: " <script>literal</script>"
+        }};
+        assert.equal(b.nodes.get("context").textContent, "prepared <script>literal</script>");
+        return {status: "complete", state: state("fallback final", true)};
+      }
+      throw new Error("Unexpected " + url);
+    }});
+    try {
+      await b.boot;
+      b.nodes.get("message").value = "Hello";
+      await b.run("generate()");
+      assert.equal(streams, 1);
+      assert.equal(polls, 2);
+      assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+      assert.equal(b.run("pending"), null);
+    } finally { b.stop(); }
+  }
+});
+
+test("stream idle watchdog aborts stalled subscription and retrieves the same final result", async () => {
+  let stalled = false;
+  let streamAborted = false;
+  const b = browser({watchdogMs: 10, respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("committed");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "stall", status: "running"};
+    if (url === "/api/jobs/stall/events") return {streamResponse: {
+      ok: true, status: 200, headers: {get: () => "text/event-stream"}, body: {getReader: () => ({
+        read: () => new Promise((resolve, reject) => {
+          stalled = true;
+          params.signal.addEventListener("abort", () => {
+            streamAborted = true; reject(new Error("aborted"));
+          }, {once: true});
+        }),
+        cancel: async () => {}, releaseLock() {}
+      })}
+    }};
+    if (url === "/api/jobs/stall") return {status: "complete", state: state("after idle watchdog", true)};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+    assert.equal(stalled, true);
+    assert.equal(streamAborted, true);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.nodes.get("context").textContent, "after idle watchdog");
+  } finally { b.stop(); }
+});
+
+test("stream missing job restores the committed view and draft without resubmission", async () => {
+  const original = state("committed");
+  const b = browser({respond: (url) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return original;
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "expired-stream", status: "running"};
+    if (url === "/api/jobs/expired-stream/events") return streamed([progress(1, " unfinished", 1)]);
+    if (url === "/api/jobs/expired-stream") return {httpStatus: 404, payload: {error: "Reply expired"}};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "keep draft";
+    await b.run("generate()");
+    assert.equal(b.nodes.get("context").textContent, original.context_text);
+    assert.equal(b.nodes.get("message").value, "keep draft");
+    assert.equal(b.run("pending"), null);
+    assert.equal(b.nodes.get("progress-info").hidden, true);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+  } finally { b.stop(); }
+});
+
+test("heartbeat bytes reset idle watchdog during a stream longer than the idle limit", async () => {
+  let index = 0;
+  let interrupted = false;
+  const b = browser({watchdogMs: 30, respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("committed");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "heartbeat", status: "running"};
+    if (url === "/api/jobs/heartbeat/events") return {streamResponse: {
+      ok: true, status: 200, headers: {get: () => "text/event-stream"}, body: {getReader: () => ({
+        read: () => new Promise((resolve, reject) => {
+          const onAbort = () => { interrupted = true; clearTimeout(timer); reject(new Error("aborted")); };
+          const timer = setTimeout(() => {
+            params.signal.removeEventListener("abort", onAbort);
+            resolve({done: false, value: new TextEncoder().encode(++index < 5 ? ": heartbeat\n\n" : wire("complete", 1))});
+          }, 12);
+          params.signal.addEventListener("abort", onAbort, {once: true});
+        }),
+        cancel: async () => {}, releaseLock() {}
+      })}
+    }};
+    if (url === "/api/jobs/heartbeat") return {status: "complete", state: state("after heartbeats", true)};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+    assert.equal(index, 5);
+    assert.equal(interrupted, false);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+  } finally { b.stop(); }
+});
+
+test("pagehide aborts only the subscription, preserving the acknowledged job for reload", async () => {
+  let waiting = false;
+  let cancelled = false;
+  const b = browser({respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("committed");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "pagehide", status: "running"};
+    if (url === "/api/jobs/pagehide/events") return {streamResponse: {
+      ok: true, status: 200, headers: {get: () => "text/event-stream"}, body: {getReader: () => ({
+        read: () => new Promise((resolve, reject) => {
+          waiting = true;
+          params.signal.addEventListener("abort", () => { cancelled = true; reject(new Error("page hidden")); }, {once: true});
+        }),
+        cancel: async () => {}, releaseLock() {}
+      })}
+    }};
+    throw new Error("Must not submit or poll after pagehide");
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "preserved message";
+    const running = b.run("generate()");
+    await until(() => waiting);
+    b.context.window.listeners.pagehide[0]();
+    await running;
+    await b.run("saveChain");
+    assert.equal(cancelled, true);
+    assert.equal(b.run("pending.job_id"), "pagehide");
+    assert.equal([...b.records.values()].at(-1).pending.job_id, "pagehide");
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.calls.some((call) => call.url === "/api/jobs/pagehide"), false);
+  } finally { b.stop(); }
+});
+
+test("provisional text follows the reader only when already near the bottom", async () => {
+  const b = browser();
+  try {
+    await b.boot;
+    b.context.displayFixture = displayFor(state("prepared"));
+    b.run("pending = {job_id: 'scroll', display: displayFixture, submitted_settings: {max_new_tokens: 32}};");
+    b.nodes.get("context").scrollHeight = 1000;
+    b.nodes.get("context").clientHeight = 100;
+    b.nodes.get("context").scrollTop = 0;
+    b.context.progressFixture = {version: 1, seq: 1, status: "running", position: 0, generated_tokens: 1, reply_text: " one"};
+    b.run("applyProgress(progressFixture, 'scroll');");
+    assert.equal(b.nodes.get("context").scrollTop, 0);
+    b.nodes.get("context").scrollTop = 900;
+    b.context.progressFixture = {...b.context.progressFixture, seq: 2, generated_tokens: 2, reply_text: " one two"};
+    b.run("applyProgress(progressFixture, 'scroll');");
+    assert.equal(b.nodes.get("context").scrollTop, 1000);
+  } finally { b.stop(); }
+});
+
+test("back-forward cache restoration resumes the same acknowledged job without overlapping subscriptions", async () => {
+  let streams = 0;
+  let waiting = false;
+  const b = browser({respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("committed");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "back-forward", status: "running"};
+    if (url === "/api/jobs/back-forward/events") {
+      if (++streams > 1) return streamed([wire("complete", 1)]);
+      return {streamResponse: {
+        ok: true, status: 200, headers: {get: () => "text/event-stream"}, body: {getReader: () => ({
+          read: () => new Promise((resolve, reject) => {
+            waiting = true;
+            params.signal.addEventListener("abort", () => reject(new Error("left page")), {once: true});
+          }),
+          cancel: async () => {}, releaseLock() {}
+        })}
+      }};
+    }
+    if (url === "/api/jobs/back-forward") return {status: "complete", state: state("back-forward final", true)};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    const firstMonitor = b.run("generate()");
+    await until(() => waiting);
+    b.context.window.listeners.pagehide[0]();
+    await firstMonitor;
+    b.context.window.listeners.pageshow[0]({persisted: true});
+    await until(() => b.run("pending") === null);
+    assert.equal(streams, 2);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.nodes.get("context").textContent, "back-forward final");
+  } finally { b.stop(); }
+});
+
+test("terminal result timeout includes receiving the JSON body and retries only that result GET", async () => {
+  let results = 0;
+  let abortedBody = false;
+  const b = browser({watchdogMs: 10, respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return state("committed");
+    if (url === "/api/preview") return state("prepared");
+    if (url === "/api/message") return {job_id: "result-body", status: "running"};
+    if (url === "/api/jobs/result-body/events") return streamed([wire("complete", 1)]);
+    if (url === "/api/jobs/result-body") {
+      if (++results === 1) return {streamResponse: {
+        ok: true, status: 200, json: () => new Promise((resolve, reject) => {
+          params.signal.addEventListener("abort", () => {
+            abortedBody = true; reject(new Error("incomplete response body"));
+          }, {once: true});
+        })
+      }};
+      return {status: "complete", state: state("complete body retrieved", true)};
+    }
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+    assert.equal(abortedBody, true);
+    assert.equal(results, 2);
+    assert.equal(b.calls.filter((call) => call.url.endsWith("/events")).length, 1);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.nodes.get("context").textContent, "complete body retrieved");
+  } finally { b.stop(); }
 });

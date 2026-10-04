@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
-from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner
+from .runtime import MODEL_CONTEXT_TOKENS, GenerationSettings, Gpt2Runner, SampledToken
 
 HUMAN_MARKER = "\n\nHuman>"
 MODEL_MARKER = "\n\nGPT-2>"
@@ -123,8 +123,14 @@ def resolve_seed(settings: GenerationSettings, fallback_seed: int | None = None)
 def _generate_reply(
     prepared: PreparedInput, requested: GenerationSettings,
     effective: GenerationSettings, runner: Gpt2Runner,
+    *, on_token: Callable[[SampledToken], None] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    result = runner.generate_result(prepared.prompt, effective, stop_pattern=MESSAGE_DELIMITER_PATTERN)
+    # Keep older runners and the non-streaming path's arguments unchanged.
+    observer_arguments = {"on_token": on_token} if on_token is not None else {}
+    result = runner.generate_result(
+        prepared.prompt, effective, stop_pattern=MESSAGE_DELIMITER_PATTERN,
+        **observer_arguments,
+    )
     if result.prompt_truncated or result.input_tokens != prepared.input_tokens:
         raise RuntimeError("Chat token accounting disagreed with the runtime; history was preserved")
     reply_text = _trim_reply(result.text)
@@ -239,10 +245,15 @@ class ChatSession:
         )
         return state
 
-    def reply(self, message: object, settings: GenerationSettings, runner: Gpt2Runner) -> None:
+    def reply(
+        self, message: object, settings: GenerationSettings, runner: Gpt2Runner,
+        *, on_token: Callable[[SampledToken], None] | None = None,
+    ) -> None:
         prepared = self.prepare(message, settings, runner.count_prompt_tokens)
         effective_settings = resolve_seed(settings, self.settings.seed)
-        reply_text, generation = _generate_reply(prepared, settings, effective_settings, runner)
+        reply_text, generation = _generate_reply(
+            prepared, settings, effective_settings, runner, on_token=on_token,
+        )
         new_round = Round(human=prepared.message, assistant=reply_text, generation=generation)
         # Commit history and metadata only after successful inference and validation.
         if prepared.header is not None:
@@ -300,9 +311,14 @@ class ChatSession:
         )
         return state
 
-    def regenerate(self, settings: GenerationSettings, runner: Gpt2Runner) -> None:
+    def regenerate(
+        self, settings: GenerationSettings, runner: Gpt2Runner,
+        *, on_token: Callable[[SampledToken], None] | None = None,
+    ) -> None:
         prepared, effective = self._prepare_regeneration(settings, runner.count_prompt_tokens)
-        reply_text, generation = _generate_reply(prepared, settings, effective, runner)
+        reply_text, generation = _generate_reply(
+            prepared, settings, effective, runner, on_token=on_token,
+        )
         last = self.rounds[-1]
         previous = copy.deepcopy(last.previous_responses)
         previous.append({"text": last.assistant, "generation": copy.deepcopy(last.generation)})
@@ -393,8 +409,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    @staticmethod
+    def _json_bytes(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
     def _json(self, status: int, value: object) -> None:
-        self._send(status, json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"), "application/json; charset=utf-8")
+        self._send(status, self._json_bytes(value), "application/json; charset=utf-8")
 
     def _local_request(self) -> bool:
         port = self.server.server_port
@@ -418,9 +438,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 try:
                     session_id = parse_qs(parsed.query).get("session_id", [None])[0]
                     session = self.server.application.session(session_id)
-                    self._json(200, session.state(self.server.application.runner.count_prompt_tokens))
+                    status, content = 200, self._json_bytes(session.state(self.server.application.runner.count_prompt_tokens))
                 except KeyError as exc:
-                    self._json(404, {"error": exc.args[0]})
+                    status, content = 404, self._json_bytes({"error": exc.args[0]})
+            self._send(status, content, "application/json; charset=utf-8")
         else:
             self._json(404, {"error": "Not found"})
 
@@ -445,6 +466,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not app.lock.acquire(blocking=False):
             self._json(409, {"error": "The model is busy; try again after the current reply"})
             return
+        status, response = 200, None
+        export_commit = None
         try:
             if self.path == "/api/new":
                 session = app.new_session(body.get("example_rounds", 2), body.get("date"), body.get("previous_session_id"), parse_settings(body.get("settings", {})))
@@ -455,13 +478,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/preview":
                 session = app.session(body.get("session_id"))
                 settings = parse_settings(body.get("settings", {}))
-                self._json(200, session.preview(body.get("message"), settings, app.runner.count_prompt_tokens))
-                return
+                response = session.preview(body.get("message"), settings, app.runner.count_prompt_tokens)
             elif self.path == "/api/regenerate-preview":
                 session = app.session(body.get("session_id"))
                 settings = parse_settings(body.get("settings", {}))
-                self._json(200, session.regeneration_preview(settings, app.runner.count_prompt_tokens))
-                return
+                response = session.regeneration_preview(settings, app.runner.count_prompt_tokens)
             elif self.path == "/api/regenerate":
                 session = app.session(body.get("session_id"))
                 settings = parse_settings(body.get("settings", {}))
@@ -472,24 +493,29 @@ class ChatHandler(BaseHTTPRequestHandler):
                 session = app.session(body.get("session_id"))
                 export_settings = parse_settings(body["settings"]) if "settings" in body else session.settings
                 export_settings = resolve_seed(export_settings, session.settings.seed)
-                self._json(200, export_chat(session, export_settings))
-                session.settings = export_settings
-                return
+                response = export_chat(session, export_settings)
+                export_commit = (session, export_settings)
             elif self.path == "/api/import":
                 session = app.import_session(body.get("chat"), body.get("previous_session_id"))
             else:
-                self._json(404, {"error": "Not found"})
-                return
-            self._json(200, session.state(app.runner.count_prompt_tokens))
+                status, response = 404, {"error": "Not found"}
+            if response is None:
+                response = session.state(app.runner.count_prompt_tokens)
+            # Capture aliases in state/metadata before another request can
+            # mutate them, then release inference before writing to the client.
+            content = self._json_bytes(response)
+            if export_commit is not None:
+                export_commit[0].settings = export_commit[1]
         except KeyError as exc:
-            self._json(404, {"error": exc.args[0]})
+            status, content = 404, self._json_bytes({"error": exc.args[0]})
         except ValueError as exc:
-            self._json(400, {"error": str(exc)})
+            status, content = 400, self._json_bytes({"error": str(exc)})
         except Exception as exc:
             print(f"Chat inference failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            self._json(500, {"error": "Generation failed; your message and chat history were preserved. Check the server terminal."})
+            status, content = 500, self._json_bytes({"error": "Generation failed; your message and chat history were preserved. Check the server terminal."})
         finally:
             app.lock.release()
+        self._send(status, content, "application/json; charset=utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:

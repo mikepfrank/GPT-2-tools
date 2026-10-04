@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 from contextlib import nullcontext
+from dataclasses import FrozenInstanceError, replace
 from unittest import mock
 
-from gpt2_local.runtime import GenerationResult, GenerationSettings, Gpt2Runner
+from gpt2_local.runtime import GenerationResult, GenerationSettings, Gpt2Runner, SampledToken
 
 
 class RuntimeCompatibilityTests(unittest.TestCase):
@@ -417,6 +418,148 @@ class RuntimeStopSequenceTests(unittest.TestCase):
                 GenerationSettings(max_new_tokens=10, temperature=0),
                 stop_pattern=r"(?=A)",
             )
+
+
+class RuntimeObserverTests(unittest.TestCase):
+    @staticmethod
+    def runner(
+        token_ids: tuple[int, ...] = (10, 11, 99), *, random_tokens: bool = False,
+        failure_before_callback: int | None = None,
+    ) -> Gpt2Runner:
+        import torch
+
+        class Tokenizer:
+            eos_token_id = 99
+
+            def __call__(self, *_: object, **__: object) -> dict[str, torch.Tensor]:
+                return {"input_ids": torch.tensor([[1, 2]])}
+
+            def decode(self, tokens: torch.Tensor, **_: object) -> str:
+                pieces = {1: "prompt", 2: " remainder", 10: " Answer", 11: "!", 99: ""}
+                return "".join(pieces.get(token, f"[{token}]") for token in tokens.tolist())
+
+        class Model:
+            def __init__(self) -> None:
+                self.arguments: dict[str, object] = {}
+                self.end_called = False
+
+            def generate(self, input_ids: torch.Tensor, **kwargs: object) -> torch.Tensor:
+                self.arguments = dict(kwargs)
+                streamer = kwargs.get("streamer")
+                criteria = kwargs.get("stopping_criteria")
+                if streamer is not None:
+                    streamer.put(input_ids.cpu())
+                output = input_ids
+                ids = (
+                    torch.randint(10, 60, (kwargs["max_new_tokens"],)).tolist()
+                    if random_tokens else token_ids
+                )
+                for index, token_id in enumerate(ids):
+                    next_token = torch.tensor([token_id])
+                    output = torch.cat((output, next_token[:, None]), dim=1)
+                    if index == failure_before_callback:
+                        raise RuntimeError("synthetic deadline before callback")
+                    done = bool(criteria(output, None)[0].item()) if criteria is not None else False
+                    # Match the inspected Transformers 5.18.0 CPU ordering.
+                    if streamer is not None:
+                        streamer.put(next_token.cpu())
+                    if done or token_id == Tokenizer.eos_token_id:
+                        break
+                if streamer is not None:
+                    streamer.end()
+                    self.end_called = True
+                return output
+
+        runner = object.__new__(Gpt2Runner)
+        runner._torch = torch
+        runner.tokenizer = Tokenizer()
+        runner.model = Model()
+        runner._generation_count = 0
+        return runner
+
+    def test_prompt_is_skipped_and_eos_is_observed_with_frozen_events(self) -> None:
+        runner = self.runner()
+        observed: list[SampledToken] = []
+        result = runner.generate_result(
+            "prompt", GenerationSettings(max_new_tokens=3, temperature=0),
+            on_token=observed.append,
+        )
+        self.assertEqual([event.token_id for event in observed], [10, 11, 99])
+        self.assertEqual([event.output_tokens for event in observed], [1, 2, 3])
+        self.assertEqual(tuple(event.token_id for event in observed), result.output_token_ids)
+        self.assertEqual(result.output_tokens, 3)
+        self.assertEqual(result.text, " Answer!")
+        self.assertEqual(result.stop_reason, "eos_token")
+        self.assertTrue(runner.model.end_called)
+        with self.assertRaises(FrozenInstanceError):
+            observed[0].token_id = 123
+
+    def test_elapsed_time_starts_before_prefill_and_excludes_prompt_notification(self) -> None:
+        runner = self.runner((10, 11))
+        observed: list[SampledToken] = []
+        with mock.patch("gpt2_local.runtime.time.perf_counter", side_effect=[100, 100.8, 101.1, 102]):
+            result = runner.generate_result(
+                "prompt", GenerationSettings(max_new_tokens=2, temperature=0),
+                on_token=observed.append,
+            )
+        self.assertAlmostEqual(observed[0].elapsed_seconds, 0.8)
+        self.assertAlmostEqual(observed[1].elapsed_seconds, 1.1)
+        self.assertEqual(result.elapsed_seconds, 2)
+
+    def test_observation_preserves_seeded_token_ids_text_and_generate_arguments(self) -> None:
+        for temperature in (0, 0.8):
+            with self.subTest(temperature=temperature):
+                runner = self.runner(random_tokens=True)
+                settings = GenerationSettings(max_new_tokens=6, temperature=temperature, seed=42)
+                plain = runner.generate_result("prompt", settings)
+                plain_arguments = dict(runner.model.arguments)
+                self.assertNotIn("streamer", plain_arguments)
+                observed: list[SampledToken] = []
+                streamed = runner.generate_result("prompt", settings, on_token=observed.append)
+                streamed_arguments = dict(runner.model.arguments)
+                self.assertIn("streamer", streamed_arguments)
+                del streamed_arguments["streamer"]
+                self.assertEqual(streamed_arguments, plain_arguments)
+                self.assertEqual(
+                    replace(plain, elapsed_seconds=0, tokens_per_second=0, cold_start_included=False),
+                    replace(streamed, elapsed_seconds=0, tokens_per_second=0, cold_start_included=False),
+                )
+                self.assertEqual(tuple(event.token_id for event in observed), plain.output_token_ids)
+
+    def test_token_completing_a_stop_sequence_is_still_observed(self) -> None:
+        runner = self.runner((10, 11, 99))
+        observed: list[SampledToken] = []
+        result = runner.generate_result(
+            "prompt", GenerationSettings(max_new_tokens=3, temperature=0),
+            stop_sequences=("!",), on_token=observed.append,
+        )
+        self.assertEqual([event.token_id for event in observed], [10, 11])
+        self.assertEqual(result.output_token_ids, (10, 11))
+        self.assertEqual(result.text, " Answer")
+        self.assertEqual(result.stop_reason, "stop_sequence")
+
+    def test_callback_failure_propagates_without_recording_completed_generation(self) -> None:
+        runner = self.runner()
+        def fail(_: SampledToken) -> None:
+            raise RuntimeError("observer failed")
+        with self.assertRaisesRegex(RuntimeError, "observer failed"):
+            runner.generate_result("prompt", GenerationSettings(), on_token=fail)
+        self.assertEqual(runner._generation_count, 0)
+        self.assertFalse(runner.model.end_called)
+
+    def test_exception_before_latest_callback_does_not_publish_that_token_or_end(self) -> None:
+        runner = self.runner(failure_before_callback=1)
+        observed: list[SampledToken] = []
+        with self.assertRaisesRegex(RuntimeError, "synthetic deadline"):
+            runner.generate_result("prompt", GenerationSettings(), on_token=observed.append)
+        self.assertEqual([event.token_id for event in observed], [10])
+        self.assertEqual(runner._generation_count, 0)
+        self.assertFalse(runner.model.end_called)
+
+    def test_non_callable_observer_is_rejected_before_tokenization_or_seed(self) -> None:
+        runner = object.__new__(Gpt2Runner)
+        with self.assertRaisesRegex(ValueError, "on_token must be callable"):
+            runner.generate_result("prompt", GenerationSettings(seed=42), on_token=123)
 
 
 if __name__ == "__main__":

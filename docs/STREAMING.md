@@ -1,7 +1,9 @@
-# Streaming replies: design and preview plan
+# Streaming replies: implementation and local preview
 
-Status: **design only, October 3, 2026**. Streaming is not implemented or ready
-to try yet. This work lives in `.worktrees/gpt2-streaming`, on
+Status: **implemented; local preview verified and running, October 3, 2026**.
+The automated suites pass 197 Python tests and 30 JavaScript tests. Real-model
+greedy/sample parity, near-context generation, and browser streaming/reload
+checks passed. This work lives in `.worktrees/gpt2-streaming`, on
 `codex/gpt2-streaming`, based on public-service commit
 `e5971db3b79110cb62e92575a2054a87ba5b98c4`. The owner chose a **local laptop
 preview first**, followed by owner testing before production deployment.
@@ -285,8 +287,9 @@ import/export format version 2, seeded examples, and Enter/Shift+Enter behavior.
    regeneration, reload midway, and exports. Address findings and retain a
    concrete reviewed candidate before requesting production approval.
 
-Existing test suites must remain passing. These are planned checks, not
-completed streaming verification. Keep reproduced results in
+Existing test suites must remain passing. The runtime, transport, and browser
+implementation is present and the automated suites pass; the real-model and
+owner-preview stages remain in progress. Keep reproduced results in
 [`VERIFICATION.md`](../VERIFICATION.md) when they exist.
 
 Measure queue wait from admission to worker start. Callback time to first token
@@ -307,16 +310,36 @@ production latency or sustained burst behavior from laptop TPS.
 ## The selected laptop preview
 
 Use **<http://localhost:8891/>**, separate from existing chats and the public
-origin. Reuse `/root/.venvs/gpt2-xl` and its pinned cache, selecting this
+origin. Reuse `~/.venvs/gpt2-xl` and its pinned cache in Ubuntu WSL, selecting this
 worktree through `PYTHONPATH`; do not reinstall the shared editable package.
 Use loopback, offline mode, and two Torch threads for the first trials.
 
-The following is the proposed WSL launch command **after implementation**.
-`--enable-streaming` does not exist yet:
+For a future foreground run, open PowerShell in `.worktrees/gpt2-streaming`
+and start the tracked convenience launcher:
+
+```powershell
+.\streaming-preview.ps1
+```
+
+Keep that terminal open. Once the ready message appears, open
+<http://localhost:8891/>. **Press Ctrl+C in that terminal to stop the preview**;
+wait for the process to exit before starting another model. The launcher uses
+this checkout's source through `PYTHONPATH`, resolves Ubuntu's home dynamically,
+and runs the existing pinned environment without an editable reinstall. It
+uses CPU FP32, offline mode, two Torch threads, loopback port 8891, streaming,
+the normal 256-token service cap, and the 8 GiB available-memory guard.
+
+The current session uses a separate durable launch of the private parity
+harness, which will reuse its single tested runner for serving. Do not run the
+foreground launcher while that process is loading, testing, or serving on
+8891. The convenience launcher starts the implemented service directly and
+does not repeat the private parity trials.
+
+The equivalent command inside Ubuntu WSL is:
 
 ```bash
 PYTHONPATH='/mnt/c/Users/MikeFrank/Documents/=== FILES ===/-- AI --/GPT-2/.worktrees/gpt2-streaming/src' \
-  /root/.venvs/gpt2-xl/bin/python -m gpt2_local.public_chat \
+  ~/.venvs/gpt2-xl/bin/python -m gpt2_local.public_chat \
   --host 127.0.0.1 --port 8891 --offline --threads 2 \
   --max-reply-tokens 256 --minimum-available-memory-gib 8 \
   --enable-streaming
@@ -329,11 +352,15 @@ memory, model processes, and port 8891 on both WSL
 and Windows immediately before loading. If another laptop model is running,
 coordinate its shutdown/export instead of starting another resident copy.
 
-Read-only checks in this design session found Python 3.12.3, Torch 2.14.1+cpu,
+Read-only checks before this preview found Python 3.12.3, Torch 2.14.1+cpu,
 Transformers 5.18.0, and Tokenizers 0.23.2 in that WSL environment, approximately
 14.68 GiB available memory, and no identified GPT-2 Python process or listener
 on the candidate port. These are snapshots, not future capacity guarantees.
-No preview server was started and no real-model streaming test was run.
+The durable harness completed exact greedy/sample parity and a 992-token
+context trial, then reused that single resident model for the service at
+**http://localhost:8891/**. The browser showed provisional tokens, resumed the
+same pending regeneration after reload, and committed the final reply. Details
+and timing limits are recorded in [`VERIFICATION.md`](../VERIFICATION.md).
 
 ## Production comes after the preview
 

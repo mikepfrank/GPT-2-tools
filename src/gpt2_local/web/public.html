@@ -151,6 +151,7 @@
       <pre id="context" tabindex="0" aria-label="Complete current model context">Starting a chat…</pre>
     </section>
     <p id="context-info"></p>
+    <p id="progress-info" class="file-note" hidden></p>
 
     <form id="composer" class="panel composer">
       <label for="message">Your message</label>
@@ -197,6 +198,7 @@
       context: document.getElementById("context"),
       tokenCount: document.getElementById("token-count"),
       contextInfo: document.getElementById("context-info"),
+      progressInfo: document.getElementById("progress-info"),
       composer: document.getElementById("composer"),
       message: document.getElementById("message"),
       send: document.getElementById("send"),
@@ -221,6 +223,15 @@
     let busy = false;
     let canRegenerate = false;
     let maxReplyTokens = 256;
+    let streamingEnabled = false;
+    let provisionalSpan = null;
+    let provisionalSeq = -1;
+    let provisionalText = "";
+    let provisionalTokens = 0;
+    let provisionalJobId = null;
+    let activeStreamAbort = null;
+    let monitorTask = null;
+    let pageLeaving = false;
     let storageId = null;
     let database = null;
     let saveTimer = null;
@@ -375,7 +386,7 @@
     }
 
     function setStatus(message, isError = false) {
-      elements.status.textContent = message;
+      if (elements.status.textContent !== message) elements.status.textContent = message;
       elements.status.classList.toggle("error", isError);
     }
 
@@ -391,16 +402,23 @@
       let response;
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), 20000);
-      try {
-        response = await fetch(path, body === undefined ? {signal: abort.signal, cache: "no-store"} : {
-          method: "POST", signal: abort.signal, cache: "no-store",
-          headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
-        });
-      } catch (_) {
-        throw new Error("Could not reach the chat server. Your saved conversation and unsent message are still here.");
-      } finally { clearTimeout(timer); }
       let payload;
-      try { payload = await response.json(); } catch (_) {
+      try {
+        try {
+          response = await fetch(path, body === undefined ? {signal: abort.signal, cache: "no-store"} : {
+            method: "POST", signal: abort.signal, cache: "no-store",
+            headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+          });
+        } catch (_) {
+          throw new Error("Could not reach the chat server. Your saved conversation and unsent message are still here.");
+        }
+        // Receiving headers is not completion: keep the timeout active while
+        // a canonical result body is arriving, so recovery cannot hang here.
+        try { payload = await response.json(); } catch (_) {
+          throw new Error("The chat server returned an unreadable or incomplete response.");
+        }
+      } finally { clearTimeout(timer); }
+      if (!payload || typeof payload !== "object") {
         throw new Error("The chat server returned an unreadable response.");
       }
       if (!response.ok) {
@@ -479,12 +497,14 @@
 
     function commitState(state, updateControls = false) {
       validateState(state, true);
+      clearProvisional();
       committed = clone(state);
       applyState(committed, updateControls);
       elements.exportChat.disabled = false;
     }
 
     function rollbackView() {
+      clearProvisional();
       if (committed) applyState(committed);
     }
 
@@ -677,48 +697,294 @@
       }
     }
 
-    async function pollJob() {
+    function preparedDisplay(value) {
+      validateState(value);
+      const blocks = value.context_blocks;
+      if (!Array.isArray(blocks) || !blocks.every((block) => block &&
+          typeof block.text === "string" && ["context", "human", "model"].includes(block.role)) ||
+          blocks.map((block) => block.text).join("") !== value.context_text ||
+          !Number.isInteger(value.retained_example_rounds) || value.retained_example_rounds < 0 ||
+          !Number.isInteger(value.dropped_rounds) || value.dropped_rounds < 0) {
+        throw new Error("The prepared input display is incomplete.");
+      }
+      return {
+        context_text: value.context_text, context_blocks: clone(blocks),
+        context_tokens: value.context_tokens,
+        retained_example_rounds: value.retained_example_rounds,
+        dropped_rounds: value.dropped_rounds
+      };
+    }
+
+    function clearProvisional() {
+      provisionalSpan = null;
+      provisionalSeq = -1;
+      provisionalText = "";
+      provisionalTokens = 0;
+      provisionalJobId = null;
+      elements.progressInfo.hidden = true;
+    }
+
+    function renderPendingDisplay() {
+      if (!pending || !pending.display) return false;
+      renderContext(pending.display);
+      elements.tokenCount.textContent = pending.display.context_tokens.toLocaleString() + " input / 1,024 tokens";
+      elements.contextInfo.textContent = pending.display.retained_example_rounds + " seeded rounds retained · " +
+        pending.display.dropped_rounds + " older rounds removed";
+      provisionalSpan = document.createElement("span");
+      provisionalSpan.className = "role-model";
+      provisionalSpan.setAttribute("aria-label", "Provisional reply, not yet saved");
+      provisionalSpan.textContent = provisionalText;
+      elements.context.appendChild(provisionalSpan);
+      elements.progressInfo.hidden = false;
+      elements.progressInfo.textContent = "Reply in progress — not yet saved. Export keeps the committed conversation.";
+      return true;
+    }
+
+    function validateProgress(progress) {
+      const cap = pending && pending.submitted_settings &&
+        Number.isInteger(pending.submitted_settings.max_new_tokens) ?
+        pending.submitted_settings.max_new_tokens : 1023;
+      if (!progress || progress.version !== 1 || !Number.isSafeInteger(progress.seq) || progress.seq < 0 ||
+          !["queued", "running"].includes(progress.status) ||
+          !Number.isInteger(progress.position) || progress.position < 0 ||
+          (progress.status === "queued" && progress.position < 1) ||
+          (progress.status === "running" && progress.position !== 0) ||
+          !Number.isInteger(progress.generated_tokens) || progress.generated_tokens < 0 ||
+          progress.generated_tokens > cap || typeof progress.reply_text !== "string" ||
+          new Blob([progress.reply_text]).size > 1024 * 1024 ||
+          (progress.status === "queued" && (progress.reply_text !== "" || progress.generated_tokens !== 0))) {
+        throw new Error("The server returned invalid reply progress.");
+      }
+    }
+
+    function applyProgress(progress, jobId) {
+      // Old pending records lack the exact prepared input. Their recovery is
+      // final-only; a reply prefix cannot reconstruct its corresponding prompt.
+      if (!pending || pending.job_id !== jobId || !pending.display) return;
+      validateProgress(progress);
+      if (provisionalJobId !== jobId) {
+        clearProvisional();
+        provisionalJobId = jobId;
+      }
+      if (progress.seq <= provisionalSeq) return;
+      if (progress.generated_tokens < provisionalTokens || !progress.reply_text.startsWith(provisionalText)) {
+        throw new Error("The server returned inconsistent cumulative reply progress.");
+      }
+      const followBottom = elements.context.scrollHeight - elements.context.scrollTop - elements.context.clientHeight <= 48;
+      provisionalSeq = progress.seq;
+      provisionalText = progress.reply_text;
+      provisionalTokens = progress.generated_tokens;
+      if (!provisionalSpan) renderPendingDisplay();
+      provisionalSpan.textContent = provisionalText;
+      const effective = pending.regeneration_settings;
+      const seedNote = pending.regenerated && effective && typeof effective.seed === "string" ? " · seed " + effective.seed : "";
+      elements.progressInfo.hidden = false;
+      elements.progressInfo.textContent = "Reply in progress — not yet saved · " + progress.generated_tokens +
+        " sampled tokens" + seedNote + ". Export keeps the committed conversation.";
+      if (followBottom) elements.context.scrollTop = elements.context.scrollHeight;
+      showJobStatus(progress);
+    }
+
+    function createSseParser(onEvent, maximumBytes = 1024 * 1024) {
+      // Parse delimiters as bytes, then decode complete UTF-8 lines. A read()
+      // chunk can contain many frames; only one unfinished frame is bounded.
+      const line = new Uint8Array(maximumBytes);
+      const decoder = new TextDecoder("utf-8", {fatal: true});
+      let lineLength = 0;
+      let frameBytes = 0;
+      let pendingCR = false;
+      let name = "message";
+      let identifier = null;
+      let data = [];
+      function completeLine() {
+        const text = decoder.decode(line.subarray(0, lineLength));
+        lineLength = 0;
+        if (text === "") {
+          if (data.length) {
+            let payload;
+            try { payload = JSON.parse(data.join("\n")); } catch (_) {
+              throw new Error("The reply stream contained invalid JSON.");
+            }
+            if (!["progress", "complete", "failed"].includes(name) || !payload || payload.version !== 1 ||
+                !Number.isSafeInteger(payload.seq) || payload.seq < 0 ||
+                (identifier !== null && identifier !== String(payload.seq))) {
+              throw new Error("The reply stream contained an invalid event.");
+            }
+            onEvent({type: name, payload});
+          }
+          name = "message";
+          identifier = null;
+          data = [];
+          frameBytes = 0;
+          return;
+        }
+        if (text.startsWith(":")) return;
+        const colon = text.indexOf(":");
+        const field = colon < 0 ? text : text.slice(0, colon);
+        let value = colon < 0 ? "" : text.slice(colon + 1);
+        if (value.startsWith(" ")) value = value.slice(1);
+        if (field === "event") name = value;
+        else if (field === "data") data.push(value);
+        else if (field === "id") {
+          if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+            throw new Error("The reply stream contained an invalid cursor.");
+          }
+          identifier = value;
+        }
+      }
+      return {
+        push(bytes) {
+          if (!(bytes instanceof Uint8Array)) throw new Error("The reply stream returned invalid bytes.");
+          for (const byte of bytes) {
+            if (pendingCR) {
+              pendingCR = false;
+              if (byte === 10) {
+                if (++frameBytes > maximumBytes) throw new Error("The reply stream frame exceeds its 1 MiB limit.");
+                completeLine();
+                continue;
+              }
+              completeLine();
+            }
+            if (++frameBytes > maximumBytes) throw new Error("The reply stream frame exceeds its 1 MiB limit.");
+            if (byte === 13) pendingCR = true;
+            else if (byte === 10) completeLine();
+            else line[lineLength++] = byte;
+          }
+        },
+        finish() {
+          if (pendingCR) { pendingCR = false; completeLine(); }
+          // An unterminated data frame is never an authoritative event. EOF
+          // always leads to checking the existing job through ordinary GET.
+        }
+      };
+    }
+
+    async function streamJob(jobId) {
+      const abort = new AbortController();
+      activeStreamAbort = abort;
+      let timer = null;
+      let reader = null;
+      let terminal = null;
+      function resetWatchdog() {
+        clearTimeout(timer);
+        timer = setTimeout(() => abort.abort(), 20000);
+      }
+      resetWatchdog();
+      try {
+        const headers = {Accept: "text/event-stream"};
+        if (provisionalSeq >= 0) headers["Last-Event-ID"] = String(provisionalSeq);
+        let response;
+        try {
+          response = await fetch("/api/jobs/" + encodeURIComponent(jobId) + "/events", {
+            headers, signal: abort.signal, cache: "no-store", credentials: "same-origin"
+          });
+        } catch (_) { throw new Error("The reply stream disconnected. Your pending request has been preserved."); }
+        if (!response.ok) {
+          throw Object.assign(new Error("Streaming is unavailable (" + response.status + "); checking the same reply by polling."),
+            {fallback: true});
+        }
+        if (!response.headers || !/^text\/event-stream(?:;|$)/i.test(response.headers.get("Content-Type") || "") ||
+            !response.body || typeof response.body.getReader !== "function") {
+          throw Object.assign(new Error("Streaming is unavailable in this browser; checking the same reply by polling."),
+            {fallback: true});
+        }
+        reader = response.body.getReader();
+        const parser = createSseParser((event) => {
+          if (terminal || !pending || pending.job_id !== jobId) return;
+          if (event.type === "progress") applyProgress(event.payload, jobId);
+          else if (event.payload.seq > provisionalSeq) terminal = event;
+        });
+        resetWatchdog();
+        while (!pageLeaving && pending && pending.job_id === jobId) {
+          let item;
+          try { item = await reader.read(); } catch (_) {
+            throw new Error("The reply stream disconnected. Your pending request has been preserved.");
+          }
+          if (item.done) {
+            try { parser.finish(); } catch (error) { error.fallback = true; throw error; }
+            return terminal;
+          }
+          resetWatchdog();
+          try { parser.push(item.value); } catch (error) { error.fallback = true; throw error; }
+          if (terminal) return terminal;
+        }
+        return null;
+      } finally {
+        clearTimeout(timer);
+        abort.abort();
+        if (reader) {
+          try { void reader.cancel().catch(() => {}); } catch (_) { /* Already closed. */ }
+          try { reader.releaseLock(); } catch (_) { /* A pending read releases on abort. */ }
+        }
+        if (activeStreamAbort === abort) activeStreamAbort = null;
+      }
+    }
+
+    async function finishJob(job, jobId) {
+      if (!pending || pending.job_id !== jobId) return true;
+      if (job.status === "complete") {
+        const wasRegenerated = pending.regenerated;
+        const submittedDraft = pending.message;
+        commitState(job.state);
+        applySeed(job.state.settings);
+        // A recovered job never discards text typed since its submission.
+        if (!wasRegenerated && elements.message.value === submittedDraft) elements.message.value = "";
+        pending = null;
+        await persist();
+        setBusy(false);
+        setStatus(generationStatus(committed, wasRegenerated));
+        elements.message.focus();
+        return true;
+      }
+      if (job.status === "failed") {
+        throw Object.assign(new Error(job.error || "Generation failed."), {terminal: true});
+      }
+      if (!["queued", "running"].includes(job.status)) {
+        throw new Error("The server returned an unknown request status.");
+      }
+      return false;
+    }
+
+    function pollJob() {
+      if (!monitorTask) monitorTask = watchJob().finally(() => { monitorTask = null; });
+      return monitorTask;
+    }
+
+    async function watchJob() {
       let backoff = 1500;
-      while (pending && typeof pending.job_id === "string") {
+      let useStream = streamingEnabled && pending && Boolean(pending.display);
+      let checkFirst = !useStream;
+      let terminalNotified = false;
+      while (!pageLeaving && pending && typeof pending.job_id === "string") {
         const jobId = pending.job_id;
         try {
+          if (useStream && !checkFirst && !terminalNotified) {
+            const event = await streamJob(jobId);
+            if (event) terminalNotified = true;
+            checkFirst = true;
+          }
+          if (pageLeaving || !pending || pending.job_id !== jobId) return;
           const job = await request("/api/jobs/" + encodeURIComponent(jobId));
-          if (!pending || pending.job_id !== jobId) return;
-          if (job.status === "complete") {
-            const wasRegenerated = pending.regenerated;
-            const submittedDraft = pending.message;
-            commitState(job.state);
-            applySeed(job.state.settings);
-            // A recovered job never discards text typed since its submission.
-            if (!wasRegenerated && elements.message.value === submittedDraft) elements.message.value = "";
-            pending = null;
-            await persist();
-            setBusy(false);
-            setStatus(generationStatus(committed, wasRegenerated));
-            elements.message.focus();
-            return;
-          }
-          if (job.status === "failed") {
-            throw Object.assign(new Error(job.error || "Generation failed."), {terminal: true});
-          }
-          if (!["queued", "running"].includes(job.status)) {
-            throw new Error("The server returned an unknown request status.");
-          }
-          showJobStatus(job);
+          if (await finishJob(job, jobId)) return;
+          if (job.progress && pending.display) applyProgress(job.progress, jobId);
+          else showJobStatus(job);
           backoff = 1500;
+          checkFirst = false;
         } catch (error) {
-          if (!pending || pending.job_id !== jobId) return;
-          rollbackView();
+          if (pageLeaving || !pending || pending.job_id !== jobId) return;
           if (error.terminal || error.status === 404 || error.status === 410) {
             const prefix = error.status === 404 || error.status === 410 ?
               "The pending reply expired or the server restarted. " : "Reply failed. ";
             pending = null;
+            rollbackView();
             await persist();
             setBusy(false);
             setStatus(prefix + error.message + " Your conversation and draft were preserved.", true);
             elements.message.focus();
             return;
           }
+          if (error.fallback) useStream = false;
+          checkFirst = true;
           setStatus(error.message + " Checking the same pending request again shortly; no new generation is being submitted.", true);
           backoff = Math.min(backoff * 2, 15000);
         }
@@ -763,7 +1029,9 @@
         applyState(preview);
         // Persist before POST so a reload cannot silently resubmit an uncertain
         // request. The committed transcript never contains an unaccepted turn.
-        pending = {job_id: null, regenerated, message, submitted_at: new Date().toISOString()};
+        pending = {job_id: null, regenerated, message, submitted_at: new Date().toISOString(),
+          display: preparedDisplay(preview), submitted_settings: clone(controls)};
+        if (regenerated && preview.settings) pending.regeneration_settings = clone(preview.settings);
         await persist();
         setStatus("Submitting this reply request to the queue…");
         submitted = true;
@@ -816,7 +1084,22 @@
       element.addEventListener("change", scheduleSave);
     }
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void persist(); });
-    window.addEventListener("pagehide", () => { void persist(); });
+    window.addEventListener("pagehide", () => {
+      pageLeaving = true;
+      if (activeStreamAbort) activeStreamAbort.abort();
+      void persist();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      pageLeaving = false;
+      // Back/forward cache can revive this same page after pagehide. Wait for
+      // an aborted monitor to settle before starting another subscription.
+      const resume = () => {
+        if (!pageLeaving && pending && pending.job_id) void pollJob();
+      };
+      if (monitorTask) void monitorTask.then(resume);
+      else resume();
+    });
 
     async function initialize() {
       setBusy(true);
@@ -826,7 +1109,13 @@
           if (saved.state) commitState(saved.state, true);
           if (typeof saved.draft === "string") elements.message.value = saved.draft;
           restoreControls(saved.controls);
-          if (saved.pending && (saved.pending.job_id === null || typeof saved.pending.job_id === "string")) pending = saved.pending;
+          if (saved.pending && (saved.pending.job_id === null || typeof saved.pending.job_id === "string")) {
+            pending = saved.pending;
+            if (pending.display) {
+              try { pending.display = preparedDisplay(pending.display); }
+              catch (_) { delete pending.display; }
+            }
+          }
         } catch (_) {
           storageWarning("The saved chat is incomplete and could not be restored. Import a previously exported JSON backup.");
         }
@@ -837,8 +1126,10 @@
       // Save a forked tab's restored snapshot before checking the network. An
       // offline reload must still find the newly selected browser storage key.
       if (saved) await persist();
+      if (pending && pending.job_id && pending.display) renderPendingDisplay();
       try {
         const health = await request("/api/health");
+        streamingEnabled = Boolean(health.capabilities && health.capabilities.streaming === true);
         if (health.limits && Number.isInteger(health.limits.max_reply_tokens) &&
             health.limits.max_reply_tokens > 0 && health.limits.max_reply_tokens <= 1023) {
           maxReplyTokens = health.limits.max_reply_tokens;

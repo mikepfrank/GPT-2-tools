@@ -127,18 +127,37 @@ results in `VERIFICATION.md`, recording runtime, exact prompt/settings,
 thread count, cold/warm status, and CPU/memory use. Core-count ratios alone
 do not predict GPT-2 inference throughput.
 
-## Streaming design branch
+## Local streaming preview
 
-Streaming design work starts from public-service tip `e5971db` in the isolated
+Streaming work starts from public-service tip `e5971db` in the isolated
 `.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose
 a local laptop preview first, followed by testing before a production rotation.
-[`docs/STREAMING.md`](docs/STREAMING.md) specifies the optional token observer,
-Unicode/speaker-boundary buffering, bounded SSE progress, recovery, and staged
-validation. This is a design only: no streaming implementation or preview is
-ready, no model was loaded for this design, and production remains unchanged.
-Use the shared WSL environment through `PYTHONPATH` and a separate loopback port;
-recheck capacity before loading, and obtain owner acceptance of the candidate
-before deploying it.
+The optional raw-token observer, safe Unicode/speaker-boundary decoder, bounded
+SSE subscriptions, cumulative progress, polling fallback, and same-job reload
+recovery are implemented. Partial text remains outside committed archives;
+the final validated GET result owns the transaction. Streaming defaults off.
+The branch also contains the public query-handling fix (cherry-pick `4b5cf86`).
+
+On October 3 CDT, the complete WSL Python suite passed 197 tests and the
+frontend passed 30 tests. One offline CPU FP32 model with two Torch threads
+passed greedy and sampled stream-off/on parity for exact raw token IDs,
+settings, text, stop reason, and canonical archive except timestamps/timings.
+A separate 992-token prompt exercised real streaming at the context boundary.
+The in-app browser displayed provisional tokens and successfully resumed a
+pending regeneration after reload. Exact evidence is in `VERIFICATION.md`;
+private prompts, token arrays, archives, and screenshots remain ignored.
+
+The durable preview currently runs as WSL PID 341 at **http://localhost:8891/**,
+bound only to `127.0.0.1:8891`. Its private log and PID file are under
+`outputs/deploy/streaming-preview.*`. Inspect the saved PID command line before
+stopping it; send SIGTERM only while its health reports no accepted work.
+After it stops, `./streaming-preview.ps1` launches a foreground preview; Ctrl+C
+stops that foreground process. Do not launch a second resident model.
+[`docs/STREAMING.md`](docs/STREAMING.md) gives startup and implementation details.
+Use the shared WSL environment through `PYTHONPATH`, recheck capacity before
+loading, and obtain owner acceptance before deploying this candidate.
+The public service and its Caddy configuration were not touched during this
+streaming implementation or validation.
 
 ## Current state
 
