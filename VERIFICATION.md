@@ -923,3 +923,26 @@ identity, supplemented by Windows Git metadata. The preview launched before
 the implementation commit, so source-file hashes are the loaded-code evidence.
 No source change or model restart was needed to commit the verified files.
 The owner has not yet accepted this candidate for production.
+
+An independent HTTP exercise also passed, with exactly **two generation
+POSTs**: a reply at seed 42 and regeneration at seed 43, both sampled at
+temperature 0.8 with zero examples and a 16-token allowance. The message was
+"What are some interesting ideas about reversible computing?" Both requests
+used the same 144-token input prompt and generated all 16 allowed tokens.
+Model generation took **5.425 / 5.260 seconds**, with first-token callbacks at
+**2.292 / 2.140 seconds**. Health stayed ready and reported running during both
+generations. Stable streamed text prefixes, canonical raw IDs/settings, final
+GET retrieval, export/import equality except `exported_at`, unchanged source
+archives, and the exact retained seed-42 regeneration candidate all passed.
+
+The helper disconnected its first SSE after token one. A Windows `localhost`
+dual-stack connection fallback added roughly two seconds per connection,
+causing its running-GET assertion to race completion. The helper then used
+IPv4 with the same localhost Host/Origin, recovered the existing completed
+job with `Last-Event-ID: 3`, and received its terminal SSE without resubmitting.
+This verifies retained-result reconnect, while the separate browser trial
+above verifies recovery during active generation. The complete evidence is
+`outputs/deploy/streaming-http-smoke-20261003.json`, SHA-256
+`dfe78c9a21128de8ff0863191bcd060bd28155a0b425d3a0415f59688fb0e472`.
+The browser was finally left on a fresh chat with the normal 120-token limit
+and two examples; the resident preview remained healthy and idle.
