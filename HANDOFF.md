@@ -88,11 +88,15 @@ Near-full-context process-lifetime peak RSS reached 7.928 GiB. These brief
 trials include prompt prefill and do not establish sustained burst capacity,
 concurrent throughput, or time to first token.
 
-The public beta is deployed at <https://gpt2-chat.arcturuschess.com/>;
-`gpt-2.arcturuschess.com` redirects to that canonical origin. The persistent
+The public beta is deployed at <https://gpt2-chat.com/>. Both temporary names,
+`gpt2-chat.arcturuschess.com` and `gpt-2.arcturuschess.com`, redirect to this
+canonical origin, preserving path/query. The owner exported the only existing
+chat before migration; use JSON import to cross the browser-storage origin
+boundary. The persistent
 `gpt2-public` unit is active/enabled as `gpt-2`, uses two Torch threads,
 `MemoryHigh=8704M` / `MemoryMax=9G`, and keeps its backend on loopback 8899.
-Deployment used source `e627fd3c5be59d3687e154fd228ab8345949aea6`.
+The domain transition used checkout `5c6de2a968e1e2474260bfd6bf65704a6bc44fa9`;
+earlier deployment measurements retain their original revision/origin records.
 Real-browser generation, pending-job reload without resubmission, completed-chat
 recovery, and alias navigation passed. A real-model 992-input/32-output-token
 HTTPS API test also passed exact preview, archive transfers, and isolation.

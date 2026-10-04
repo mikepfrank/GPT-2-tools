@@ -29,13 +29,15 @@ permitted these trials without lowering the guard. Recheck available capacity
 before later model loads, and avoid a second resident copy during testing.
 
 The public beta is active at
-<https://gpt2-chat.arcturuschess.com/>; <https://gpt-2.arcturuschess.com/>
-redirects to that canonical host, preserving path/query. Both CNAMEs point
-through `arcturuschess.com` to 16.145.194.176, with no published AAAA. Caddy
-issued valid HTTPS certificates for both. The `gpt2-public` service is active
+<https://gpt2-chat.com/>. Both temporary names, `gpt2-chat.arcturuschess.com`
+and `gpt-2.arcturuschess.com`, redirect there over HTTPS with status 308,
+preserving path/query. Public DNS-over-HTTPS verified A 16.145.194.176 and no
+AAAA for the dedicated domain; valid TLS and proxy health passed. The
+`gpt2-public` service is active
 and enabled as `gpt-2`, using two threads, the exact canonical HTTPS origin,
 `MemoryHigh=8704M`, and `MemoryMax=9G`. Enabling was verified; no reboot test
-was performed. The deployed application source was `e627fd3`.
+was performed. The domain transition used checkout `5c6de2a`; historical
+deployment and benchmark evidence retains its original source revisions.
 
 Real-browser generation, pending-job reload without resubmission, completed-chat
 recovery, and alias navigation passed. A real-model near-full HTTPS request
@@ -278,8 +280,10 @@ Keep the admin endpoint disabled.
 For another deployment, replace the domain placeholder in
 `deploy/Caddyfile.gpt2.example`, configure DNS, and set `GPT2_PUBLIC_ORIGIN`
 to the exact canonical HTTPS origin. Serve the application at the site root.
-The current alias redirects to the canonical origin so browser storage remains
-at one origin. Export/import is needed when deliberately changing that origin.
+Both current aliases redirect to the dedicated canonical origin. Browser data
+stored under an old origin does not move with the redirect: export there before
+changing origins, then import at the new domain. The owner confirmed the only
+existing chat was safely exported before the October 3 dedicated-domain move.
 
 For a configuration change or rollback:
 
@@ -306,6 +310,10 @@ The October 3 pre-GPT-2 backup is
 `/home/astra/.config/astra-chess/Caddyfile.before-gpt2-20261003T224724Z`.
 That reload kept Caddy PID 4341 and existing chess PIDs 4149/4313 unchanged.
 Do not restart the shared proxy or enable its admin API merely to reload.
+The later dedicated-domain backups are
+`/home/astra/.config/astra-chess/Caddyfile.before-domain-20261004T000342Z` and
+`/etc/gpt2-public.env.before-domain-20261004T000342Z`; a domain rollback must
+restore a coherent proxy route and GPT-2 allowed origin.
 
 The reverse proxy must overwrite `X-Real-IP` with the actual connecting client's
 address and retain the requested host. The example clears visitor-supplied

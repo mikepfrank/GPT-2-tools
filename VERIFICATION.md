@@ -752,3 +752,45 @@ Available host RAM was **13,730,713,600 bytes (12.79 GiB)** of
 16,558,186,496 total, with no swap. The host cache was not flushed: this proves
 the observed warm-cache request passed, not a 9 GiB cold-cache cgroup budget or
 sustained public capacity.
+
+## Dedicated-domain transition (2026-10-03 CDT)
+
+At **2026-10-04 00:03:42–00:03:49 UTC** (October 3 in the owner's CDT
+timezone), the authorized migration made **https://gpt2-chat.com** canonical.
+Public DNS-over-HTTPS verified A **16.145.194.176** and no AAAA. Both temporary
+subdomains now redirect HTTPS 308 to the new domain, preserving path/query.
+The owner confirmed the only existing chat was exported before changing the
+browser-storage origin. Earlier measurements above remain tied to their old
+origin and source revisions.
+
+The idle GPT-2 service alone restarted (queue 0/running false), changing PID
+**39135 → 43867** and exact allowed origin to `https://gpt2-chat.com`.
+The unit stayed unchanged/enabled; CPU FP32, two threads, the 8 GiB startup
+floor, and 8.5/9 GiB soft/hard limits were unchanged. The transition used
+checkout `5c6de2a968e1e2474260bfd6bf65704a6bc44fa9`. All four unit hashes,
+including GPT-2, were unchanged; only its environment and Caddyfile changed.
+
+Caddy retained PID **4341**, and chess PIDs **4149 / 4313** and the original
+chess-configuration prefix were preserved. Under the shared lock, the complete
+candidate passed validation in Caddy's own environment; backup, inode-preserving
+write/fsync, namespace verification, SIGUSR1 success, TLS/health, and existing
+chess HTTP 200 checks passed. Backups are
+`/home/astra/.config/astra-chess/Caddyfile.before-domain-20261004T000342Z` and
+`/etc/gpt2-public.env.before-domain-20261004T000342Z`. Current SHA-256 digests:
+
+```text
+Caddyfile        a1f03617831839dcb493d7311d513ad5259a5d66fc6d47e5c181ba45cfef2311
+gpt2-public.env  b1a380290d49e4abd19d8ba61eebfff4d81271ff05eeb5a23eeea057ab59fdba
+```
+
+Let's Encrypt issued the new certificate at **00:03:45.368892 UTC**. External
+laptop HTTPS returned 200, HTTP redirected 308 to HTTPS, and a disallowed-Origin
+POST `/api/new` returned 403 with `accepted:false`.
+
+A real in-app browser initialized the new origin and completed one greedy reply
+with **227 input / 9 generated output tokens**, seed 42 and a 16-token cap,
+in about **7.6 seconds (1.18 tokens/second)**, including first-request page-in.
+The displayed reply matched the earlier browser check; token-ID equality was
+not tested. The screenshot remains ignored at
+`outputs/deploy/gpt2-chat-com-live-20261003.jpg`. This domain-only migration
+did not repeat the full-context exercise or test reboot behavior.

@@ -66,9 +66,10 @@ gpt2-xl                         # interactive mode
 ## Public anonymous chat
 
 The public beta is available at
-[GPT-2 chat](https://gpt2-chat.arcturuschess.com/).
-[gpt-2.arcturuschess.com](https://gpt-2.arcturuschess.com/) redirects to that
-canonical address, preserving paths and query strings.
+[GPT-2 chat](https://gpt2-chat.com/). Both temporary addresses,
+`gpt2-chat.arcturuschess.com` and `gpt-2.arcturuschess.com`, redirect there,
+preserving paths and query strings. Browser storage belongs to each origin;
+import an exported transcript to continue an old-origin chat at the new domain.
 
 The `codex/gpt2-public` branch adds a public-service variant of the browser
 chat. It uses the same pinned GPT-2 XL CPU FP32 checkpoint and conversation
