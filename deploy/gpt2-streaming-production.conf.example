@@ -1,0 +1,11 @@
+# Install ONLY as /etc/systemd/system/gpt2-public.service.d/90-gpt2-streaming.conf
+# after the approved preview gate/drain/result-retention sequence has stopped it.
+# Preserve the base unit, /etc/gpt2-public.env, and original production checkout.
+# The selected checkout must remain exactly the hosted-tested commit 5389a30.
+# Remove only this drop-in for rollback, then daemon-reload before starting.
+[Service]
+WorkingDirectory=/home/gpt-2/GPT-2-streaming-preview
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/gpt2-exclusive-preflight.py gpt2-preview.service
+ExecStart=
+# Set PYTHONPATH in the launched process: EnvironmentFile can override Environment=.
+ExecStart=/usr/bin/env PYTHONPATH=/home/gpt-2/GPT-2-streaming-preview/src /home/gpt-2/.venvs/gpt2-public/bin/python -m gpt2_local.public_chat --host 127.0.0.1 --port 8899 --offline --threads ${GPT2_THREADS} --enable-streaming --public-origin ${GPT2_PUBLIC_ORIGIN} --trusted-proxy 127.0.0.1 --max-reply-tokens ${GPT2_MAX_REPLY_TOKENS} --minimum-available-memory-gib ${GPT2_MIN_AVAILABLE_MEMORY_GIB}

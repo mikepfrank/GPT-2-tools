@@ -94,7 +94,7 @@ The public beta is deployed at <https://gpt2-chat.com/>. Both temporary names,
 canonical origin, preserving path/query. The owner exported the only existing
 chat before migration; use JSON import to cross the browser-storage origin
 boundary. The persistent
-`gpt2-public` unit is active/enabled as `gpt-2`, uses two Torch threads,
+`gpt2-public` unit is enabled as `gpt-2`, uses two Torch threads,
 `MemoryHigh=8704M` / `MemoryMax=9G`, and keeps its backend on loopback 8899.
 The domain transition used checkout `5c6de2a968e1e2474260bfd6bf65704a6bc44fa9`;
 earlier deployment measurements retain their original revision/origin records.
@@ -132,9 +132,9 @@ do not predict GPT-2 inference throughput.
 
 Streaming work starts from public-service tip `e5971db` in the isolated
 `.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose
-a local laptop preview first and accepted it. The owner has now authorized a
-temporary GPT-2-only production pause for hosted preview testing; production
-rollout still requires acceptance of the hosted preview.
+a local laptop preview first, accepted the local and hosted previews, and
+explicitly authorized production rollout. The controlled rollout is complete
+and real canonical generation/streaming checks passed.
 The optional raw-token observer, safe Unicode/speaker-boundary decoder, bounded
 SSE subscriptions, cumulative progress, polling fallback, and same-job reload
 recovery are implemented. Partial text remains outside committed archives;
@@ -161,71 +161,39 @@ Use the shared WSL environment through `PYTHONPATH`, recheck capacity before
 loading. The public service and its Caddy configuration were not touched during
 the laptop streaming implementation or validation.
 
-Hosted preview is **verified and active for owner testing**, October 3 CDT /
-October 4 UTC, at <https://test.gpt2-chat.com/>.
-Production application code remains `e5971db`. The separate
-`/home/gpt-2/GPT-2-streaming-preview` checkout is the reviewed application
-candidate `5389a30`, which passed the 197-test Python suite and `pip check` on
-Amazon Linux. Lifecycle tooling is installed separately at
-`/home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py`; do not
-attribute its newer tooling revision to the candidate application's evidence.
-The static, non-boot-enabled `gpt2-preview.service` is the sole resident
-Lightsail model on loopback 8898 at <https://test.gpt2-chat.com/>. It retains
-CPU FP32, two Torch threads, the 8 GiB startup floor and 8.5/9 GiB limits.
+The hosted preview at `test.gpt2-chat.com` passed real incremental-display,
+same-job reload, canonical/archive/regeneration and independent safety checks;
+the owner accepted it and requested production rollout. The frozen application
+candidate is `5389a30` in `/home/gpt-2/GPT-2-streaming-preview`; the original
+production checkout at `/home/gpt-2/GPT-2-tools` remains `e5971db`. The same
+pinned CPU FP32 model, two threads, 8 GiB startup floor and 8.5/9 GiB limits
+apply. Tooling revisions are separate from the tested application revision.
 
-The durable unit `gpt2-preview-transition-20261004-0330` began production's
-600-second result-retention wait at **2026-10-04 03:29:10.206842 UTC**, ended
-it at **03:39:10.486915 UTC**, and emitted `preview_active` at
-**03:39:20.541803 UTC**, preview PID **54021**. It retained GET results during
-the generation gate before stopping only GPT-2 production. Separate read-only
-checks passed public DNS/TLS and streaming-capable health, canonical
-maintenance 503/`accepted: false`, one resident model, and preserved
-unit/drop-in/env/guard hashes and Caddy inode. Chess PIDs 4149/4313 and Caddy
-PID 4341 are unchanged. Production root/API remain in maintenance while
-preview testing runs. Real HTTPS browser checks passed visible incremental
-tokens, same-job recovery after a mid-generation reload, final completion
-with controls unlocked, and a clean console. A fresh hosted tab is ready with
-the normal 120-token allowance and two examples. The owner can try it now;
-hosted-preview acceptance and production rollout approval are still pending.
-Separate hosted HTTP checks also passed active reconnect, canonical token IDs,
-settings, archive round trips, regeneration history, query handling and exact
-origin rejection. The final independent check found no memory pressure/OOM
-events, preserved service/configuration invariants, and an idle preview.
-See `VERIFICATION.md` for timings and detailed evidence.
+**Production streaming is active**, October 3 CDT / October 4 UTC.
+Amazon Linux preparation succeeded at **2026-10-04 04:47:57.130018 UTC** after
+14 promotion and 11 guard tests passed. Durable unit
+`gpt2-production-promote-20261004-0448` began preview's full 600-second result
+retention wait at **04:48:13.198694 UTC** and emitted
+`production_streaming_active` at **2026-10-04 04:58:27.430940 UTC**, production
+PID **58714** active/enabled and preview inactive/PID 0. Independent checks at
+**04:59:00.504526 UTC** passed canonical HTTPS streaming-ready health,
+test-domain 307/`no-store`, exact source/override/snapshot preservation,
+one model, and unchanged chess PIDs 4149/4313 and Caddy PID 4341. Two certified
+canonical HTTPS jobs passed incremental SSE/reconnect, canonical token IDs and
+settings, archive transfers and regeneration checks. Origin/query/redirect
+checks passed. Independent after-verification at **05:01:30.491948 UTC** passed
+with no warnings, the same production/chess/Caddy PIDs, and an idle service.
 
-The prepared integrity/backups stage is
-`/home/astra/.config/astra-chess/gpt2-preview-stage-20261004`. Activation is
-completed successfully with this historical command; inspect its journal,
-do not repeat it against the active preview:
-
-```bash
-sudo systemd-run --unit=gpt2-preview-transition-20261004-0330 --collect \
-  --property=Type=exec /usr/bin/python3.12 \
-  /home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py \
-  --activate --stage /home/astra/.config/astra-chess/gpt2-preview-stage-20261004
-sudo journalctl -u gpt2-preview-transition-20261004-0330 -f
-```
-
-For restoration, use the same stage and a fresh durable unit so an SSH
-disconnect cannot interrupt the full drain/result-retention window:
-
-```bash
-restore_unit="gpt2-preview-restore-$(date -u +%Y%m%d-%H%M%S)"
-sudo systemd-run --unit="$restore_unit" --collect --property=Type=exec \
-  /usr/bin/python3.12 /home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py \
-  --restore --stage /home/astra/.config/astra-chess/gpt2-preview-stage-20261004
-sudo journalctl -u "$restore_unit" -f
-```
-
-Restore gates preview generation and preserves completed results for another
-600 seconds before stopping its model. It starts the original production
-backend, restores the original Caddy bytes/inode, then verifies TLS and chess
-health; require `production_restored` and readiness evidence. Both transitions
-hold the shared proxy lock, validate/back up complete candidates, preserve
-unit/env/guard bytes, and enforce one model; the lock is released during owner
-testing. Undrainable accepted work is never force-stopped. Test and production
-origins have separate browser storage; use JSON export/import for transfers.
-See `docs/STREAMING.md` for preparation and failure/recovery details.
+Promotion keeps the base unit/env/old checkout and installs only its owned
+`90-gpt2-streaming.conf`, selecting the tested source with a WorkingDirectory
+override and explicit process `PYTHONPATH` wrapper on production port 8899.
+The test site redirects with temporary 307/`no-store`, retaining
+original public/chess Caddy bytes. The original preview helper's `--restore`
+is **obsolete after promotion**; use the promotion helper's `--rollback`,
+which also drains and retains results before restoring the polling build.
+Exact durable commands, paths, manifest stage, and recovery rules are in
+[`docs/PRODUCTION-STREAMING.md`](docs/PRODUCTION-STREAMING.md). Keep precise
+timings and reproduced evidence in `VERIFICATION.md`.
 
 ## Current state
 

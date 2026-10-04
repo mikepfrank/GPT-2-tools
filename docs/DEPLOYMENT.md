@@ -28,16 +28,35 @@ the check also respects cgroup headroom and excludes swap. The larger host
 permitted these trials without lowering the guard. Recheck available capacity
 before later model loads, and avoid a second resident copy during testing.
 
-The public beta is active at
+The public beta's canonical origin is
 <https://gpt2-chat.com/>. Both temporary names, `gpt2-chat.arcturuschess.com`
 and `gpt-2.arcturuschess.com`, redirect there over HTTPS with status 308,
 preserving path/query. Public DNS-over-HTTPS verified A 16.145.194.176 and no
 AAAA for the dedicated domain; valid TLS and proxy health passed. The
-`gpt2-public` service is active
-and enabled as `gpt-2`, using two threads, the exact canonical HTTPS origin,
+`gpt2-public` service is active/enabled as `gpt-2`, using two threads, the exact canonical HTTPS origin,
 `MemoryHigh=8704M`, and `MemoryMax=9G`. Enabling was verified; no reboot test
 was performed. The domain transition used checkout `5c6de2a`; historical
 deployment and benchmark evidence retains its original source revisions.
+
+The owner accepted the local and hosted streaming previews and authorized
+production rollout. **Production streaming is active**, October 3 CDT / October 4
+UTC: preparation passed on Amazon Linux at `2026-10-04 04:47:57.130018 UTC`,
+and durable unit `gpt2-production-promote-20261004-0448` began preview's full
+600-second result-retention wait at `04:48:13.198694 UTC`. The terminal event
+`production_streaming_active` was recorded at `2026-10-04 04:58:27.430940 UTC`,
+production PID 58714 active/enabled and preview inactive/PID 0. Independent
+verification at `04:59:00.504526 UTC` passed canonical HTTPS streaming health,
+test-domain 307/`no-store`, source/override/snapshot preservation, one model,
+and unchanged chess/Caddy PIDs. Two certified canonical HTTPS jobs passed
+incremental SSE/reconnect, canonical token/settings/archive/regeneration and
+origin/query/redirect checks. Independent after-verification at
+`05:01:30.491948 UTC` passed with no warnings, unchanged PIDs and an idle
+service. The handoff selects frozen application `5389a30`
+through an owned drop-in on the existing production unit, preserving the old
+`e5971db` checkout and env. See
+[`PRODUCTION-STREAMING.md`](PRODUCTION-STREAMING.md) for exact commands and
+safe rollback. The old preview helper's `--restore` is obsolete after promotion;
+use the production helper's `--rollback`.
 
 Real-browser generation, pending-job reload without resubmission, completed-chat
 recovery, and alias navigation passed. A real-model near-full HTTPS request
@@ -117,9 +136,13 @@ output and the deployed Git commit alongside any benchmark results.
 ## Short throughput measurements
 
 Begin with a plan that performs no inference, then resolve any failed memory
-guard before proceeding. Stop the GPT-2 web service if it is already running;
-benchmarking must not load a second copy of its model. Leave unrelated services
-running and record their activity when interpreting performance.
+guard before proceeding. If a GPT-2 web service is running, first gate new
+generation, drain accepted requests, and retain completed GET results for the
+full 600 seconds using the controlled lifecycle in
+[`PRODUCTION-STREAMING.md`](PRODUCTION-STREAMING.md), before stopping its model.
+Verify the model services are inactive with empty cgroups before benchmarking;
+never load a second model. Leave unrelated services running and record their
+activity when interpreting performance.
 
 ```bash
 "$PYTHON" scripts/benchmark-host.py --dry-run --threads 2
@@ -254,8 +277,10 @@ curl --fail --header 'Host: YOUR_GPT2_DOMAIN' http://127.0.0.1:8899/api/health
 
 Enable autostart only after the service and preservation checks pass:
 `sudo systemctl enable gpt2-public.service`. A repeated startup failure is a
-diagnostic condition, not a reason to bypass the memory guard. Stop only this
-service to roll back: `sudo systemctl disable --now gpt2-public.service`.
+diagnostic condition, not a reason to bypass the memory guard. For an operating
+service, use the gated, result-preserving rollback in
+[`PRODUCTION-STREAMING.md`](PRODUCTION-STREAMING.md); keep the existing
+enablement state and shared services intact.
 
 The unit runs as `gpt-2`, reads the code/environment from their dedicated
 paths, and permits writes only to its own cache and private temporary directory.
@@ -292,7 +317,11 @@ preserves the request path, method, and body, allowing links with Facebook's
 query in the browser URL; it is ignored when reaching the canonical HTTPS site.
 The loopback Python backend keeps its strict routing, Origin checks, and limits.
 
-For a configuration change or rollback:
+For streaming application promotion/rollback, use the gated lifecycle in
+[`PRODUCTION-STREAMING.md`](PRODUCTION-STREAMING.md). The proxy-only procedure
+below does not preserve accepted inference work by itself.
+
+For a proxy configuration change or rollback:
 
 1. Hold the existing root-owned maintenance lock
    `/run/lock/astra-caddy-config.lock` with `flock` through validation,
@@ -311,7 +340,8 @@ For a configuration change or rollback:
    successful signal delivery alone as successful reload.
 5. For rollback, validate the saved backup, restore its bytes in place under
    the same lock, fsync, compare namespace hashes, send SIGUSR1, and repeat
-   health checks. Stop only `gpt2-public` if its backend also needs rollback.
+   health checks. A backend rollback must use its gate/drain/result-retention
+   workflow before stopping any GPT-2 model; never stop chess services.
 
 The October 3 pre-GPT-2 backup is
 `/home/astra/.config/astra-chess/Caddyfile.before-gpt2-20261003T224724Z`.

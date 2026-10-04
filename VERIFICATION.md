@@ -1126,3 +1126,139 @@ and two examples. **https://test.gpt2-chat.com/** remains active for owner
 testing; production GPT-2 remains paused at its original revision. The local
 laptop preview remains separate. Streaming has not been rotated into
 production and owner acceptance of the hosted preview remains pending.
+
+## Streaming production rollout preparation (2026-10-03 CDT)
+
+The owner accepted the hosted incremental display and explicitly authorized
+production rotation. The tested application remains pinned to
+`5389a30f5833c8bcaaf0314f1c0e1c63960f309e`; its source, dependencies and model
+were not changed for promotion. The local development branch is
+`codex/gpt2-streaming`. The preserved server production checkout remains
+`e5971db3b79110cb62e92575a2054a87ba5b98c4`, even though the separate local
+`codex/gpt2-public` branch tip is `a1ee558` (the later proxy query fix).
+Rollback therefore selects the exact saved deployment, not a moving branch tip.
+
+The production override uses `/usr/bin/env PYTHONPATH=...` to select the
+accepted checkout explicitly, sets its working directory, adds streaming to
+the existing loopback-8899 command, and checks preview inactivity before
+startup. It retains the existing base unit, environment, user/cache/runtime,
+two Torch threads, 256-token cap and 8/8.5/9 GiB startup/soft/hard memory
+settings. The generic opposing-unit guard passed **11 model-free tests** on
+Amazon Linux system Python 3.9 in **0.009 seconds**. Running it as `gpt-2`
+against the active preview correctly refused startup with exit 1, without
+loading a model. Installed guard SHA-256:
+`e351ed35469d5ffc4d708f364edb206af845cc7be2db56fe2963e1c700579895`.
+
+The separate promotion/rollback helper passed **14 model-free tests** on
+Amazon Linux Python 3.12 in **0.092 seconds**. They cover full retention,
+exclusive handoff, capability checks before admission, exact preparation
+properties/file sets, source/guard/candidate drift, failed reload/partial-write
+cleanup, PID-zero restart cancellation, accepted-work drain refusal, and
+rollback of only the owned override. Independent review found no remaining
+source blocker. These tests simulate failures; a live production rollback
+was not exercised.
+
+At **2026-10-04 04:47:57.130018 UTC**, `--prepare` validated seven immutable full
+Caddy candidates, the assembled production unit, and private original-file
+snapshots in `/home/astra/.config/astra-chess/gpt2-production-stage-20261004`.
+Preparation did not change the active routes or units. Tooling is installed
+separately in `/home/ec2-user/gpt2-promotion-tooling`; promotion helper SHA-256
+`59fa0430ef4fadfbe3f5fa0db31b064787c92d5327fad4d4835977a07841ace0`
+and reused preview helper SHA-256
+`77c7175dd9093d955e8d8475b2a5f028f7c1c03c1c8675a2032707d4d431df99`
+matched local reviewed bytes. The final proxy candidate preserves all
+original public/chess blocks, including the canonical query rewrite and gzip,
+and appends only a temporary test-domain 307 redirect with `Cache-Control:
+no-store`. This keeps the test origin available for future preview reuse.
+
+Durable unit `gpt2-production-promote-20261004-0448` began the verified preview
+generation gate and **600-second** completed-result retention at
+**04:48:13.198694 UTC**. New test-site generation returned 503 with
+`accepted: false`; both chess HTTPS roots returned 200. During that window,
+preview PID **54021** remained the sole resident model, production remained
+inactive, and Caddy/Astra/Arcturus PIDs stayed **4341 / 4149 / 4313**.
+Only after accepted work and retained results drain may the helper stop the
+preview, install its owned `90-gpt2-streaming.conf`, load production under a
+POST gate, verify exact model/streaming capability and TLS, then open admission.
+
+### Production streaming activation and canonical HTTPS checks
+
+The helper confirmed preview drain/result expiry at **2026-10-04
+04:58:13.414328 UTC**, stopped that unit, installed only the owned override,
+and started production under its generation gate. After direct and canonical
+TLS readiness, it emitted **`production_streaming_active` at
+04:58:27.430940 UTC** with production PID **58714** and exited successfully.
+`gpt2-public.service` is active and enabled as `gpt-2`; preview is inactive,
+PID zero, and its recursive cgroup is empty. The sole hosted application
+remains frozen at `5389a30f5833c8bcaaf0314f1c0e1c63960f309e`. The older clean
+`e5971db3b79110cb62e92575a2054a87ba5b98c4` checkout, base production unit and
+environment remain byte-identical. Installed override SHA-256:
+`524068351cc10be7557e08344c5e2ee5cc6e92a07dc51f720eac9fc76fed106a`.
+Final active Caddy SHA-256:
+`003c9b072341c7ccd565d7eb1d94a9f86c60e90923e3d1b700c82cbba944c98f`.
+
+An independent read-only verifier passed before and after generation at
+**04:59:00.504526 / 05:01:30.491948 UTC**, with no warnings. It checked exact
+original and owned files, loaded launch/source path and resource settings,
+protected guards/backups, one production model, clean frozen source trees,
+preserved Caddy bind-mounted inode/attributes and complete original blocks,
+canonical HTTPS streaming health, the test redirect, and chess health.
+Caddy/Astra/Arcturus PIDs remained **4341 / 4149 / 4313**, their unit/config
+hashes were unchanged, and both chess HTTPS roots returned 200. Canonical
+health also passed certificate-verified `curl.exe` from the Windows laptop
+with a synthetic `fbclid` query; the query was ignored.
+
+Exactly **two** short real-model jobs ran through normal public DNS and
+certificate-verified `https://gpt2-chat.com` between **05:00:17.492853 and
+05:00:44.826132 UTC** (27.333301 seconds), with a same-host Lightsail client.
+Both prepared prompts had **144 tokens**, zero seeded examples, temperature
+**0.8**, and a **32-token** reply cap. The second job regenerated seed 42's
+reply at seed 43. Measurements:
+
+| Seed | Raw generated tokens | Generation seconds | Server first token seconds | Client first safe text seconds | Decode tokens/second |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 42 | 32 | 14.255855 | 3.196352 | 3.212617 | 2.803459 |
+| 43 | 28 | 12.708865 | 2.840064 | 2.857443 | 2.736567 |
+
+The active first job reconnected after its initial token with the same job
+identity/cursor and no new POST. Cumulative stream prefixes stayed stable;
+the final GET owned the canonical archive, token IDs and settings. Export
+and import preserved the archive except its export timestamp, and seed 43
+preserved the seed-42 candidate. Full raw token IDs and accepted reply text
+exactly matched the corresponding earlier hosted-preview jobs. Exact-origin
+rejection, ignored GET/POST queries, live health during generation, and idle
+health before/after passed. The test domain returned temporary **307** with
+`Cache-Control: no-store`; old aliases and canonical HTTP returned **308**.
+Redirects preserved encoded/repeated/empty path/query test cases, and the
+destination health endpoint ignored query parameters. This verifies actual
+canonical SSE delivery through the preserved gzip/proxy configuration.
+
+Post-run production RSS was **6.316 GiB**, process-lifetime high-water RSS
+**6.346 GiB**. Its warm cgroup charge was **438.3 MiB**, peak **469.5 MiB**;
+that accounting excludes already parent-charged mapped checkpoint pages and
+is not the model's total physical footprint. No memory-high/max/OOM events,
+swap, or cgroup CPU throttling were observed. Over the **149.985-second**
+before/after interval, production used **53.590 CPU seconds**, averaging
+**8.933%** of this four-CPU host. This interval includes verification and
+idle time; neither it nor same-host first-text timing establishes sustained
+load capacity, external-browser latency, or Lightsail burst charges.
+
+Private byte-identical evidence remains ignored under `outputs/deploy`:
+
+| Evidence | Bytes / SHA-256 |
+| --- | --- |
+| `streaming-production-smoke-lightsail-20261003.json` | 308,157 / `864a356629ac9c4a7e55d2c10e84dcb42d0dd56f6696708724959ea901bc367c` |
+| `streaming-production-verify-before.json` | `1f901b817811b1062d8f8459cbe643cfb67ba7bd9a5d26815d0e42c19452038b` |
+| `streaming-production-verify-after.json` | `b68532d139cc38ebf6165666ef744fad8044f87b462489f7292e949333f30430` |
+
+The owner already accepted browser streaming on the identical hosted build;
+this production check used synthetic HTTP jobs and did not inspect or modify
+the owner's browser archives. No application source/dependency/model change,
+reboot test, live rollback exercise, additional model copy, chess restart or
+Git push was performed. The local laptop preview remains separate. The old
+preview helper's `--restore` is obsolete after promotion: exact durable
+`--rollback` instructions in
+[`docs/PRODUCTION-STREAMING.md`](docs/PRODUCTION-STREAMING.md) drain and retain
+accepted work before removing only the owned override and restoring the
+original polling production build. Export/import transfers a test-origin chat
+to canonical browser storage.
