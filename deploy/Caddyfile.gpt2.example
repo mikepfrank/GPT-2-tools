@@ -2,6 +2,8 @@
 # Replace the domain and merge this block into the existing proxy configuration
 # only after local tests, a memory plan, and domain/DNS setup are complete.
 gpt2.example.com {
+    # Ignore tracking and other query parameters without changing the path/body.
+    rewrite * ?
     encode gzip
     reverse_proxy 127.0.0.1:8899 {
         # The backend validates Origin against its explicitly configured origin.

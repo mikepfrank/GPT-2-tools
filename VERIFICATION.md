@@ -776,7 +776,7 @@ candidate passed validation in Caddy's own environment; backup, inode-preserving
 write/fsync, namespace verification, SIGUSR1 success, TLS/health, and existing
 chess HTTP 200 checks passed. Backups are
 `/home/astra/.config/astra-chess/Caddyfile.before-domain-20261004T000342Z` and
-`/etc/gpt2-public.env.before-domain-20261004T000342Z`. Current SHA-256 digests:
+`/etc/gpt2-public.env.before-domain-20261004T000342Z`. SHA-256 digests at that transition:
 
 ```text
 Caddyfile        a1f03617831839dcb493d7311d513ad5259a5d66fc6d47e5c181ba45cfef2311
@@ -794,3 +794,43 @@ The displayed reply matched the earlier browser check; token-ID equality was
 not tested. The screenshot remains ignored at
 `outputs/deploy/gpt2-chat-com-live-20261003.jpg`. This domain-only migration
 did not repeat the full-context exercise or test reboot behavior.
+
+## Ignore public request query parameters (2026-10-03 CDT)
+
+At **20:04:33–20:04:35 CDT** (2026-10-04 01:04:33–01:04:35 UTC), the
+canonical GPT-2 Caddy site gained `rewrite * ?`, discarding all query parameters
+before proxying. The [Caddy 2.11.4 source](https://github.com/caddyserver/caddy/blob/v2.11.4/modules/caddyhttp/rewrite/rewrite.go#L54-L68)
+confirms that this empty, query-only rewrite preserves the request path and method. No Python code,
+runtime, model, service environment, or unit changed.
+
+The complete candidate passed validation/adaptation in Caddy's own environment.
+Under the shared maintenance lock, an inode-preserving write/fsync, matching
+mount-namespace bytes, and a successful SIGUSR1 reload log after a fresh journal
+cursor passed. The backup is
+`/home/astra/.config/astra-chess/Caddyfile.before-query-20261004T010433Z`.
+Caddyfile SHA-256 changed from
+`a1f03617831839dcb493d7311d513ad5259a5d66fc6d47e5c181ba45cfef2311` to
+`700beceabe7ed95cf8a08d2e20456abbae03a0fd4569aedf6cad92989438e5d9`.
+The GPT-2 environment hash remained
+`b1a380290d49e4abd19d8ba61eebfff4d81271ff05eeb5a23eeea057ab59fdba`,
+with its exact bytes verified against the pre-change snapshot. All four
+unit-file bytes were unchanged.
+
+Before the change, a Facebook-style root URL returned 404. Afterwards, local
+TLS checks passed root/health requests with `fbclid`, repeated keys, empty/bare
+values, encoded delimiters, malformed query escapes, and an empty query. The
+served page bytes matched the plain root. A query-bearing POST `/api/new`
+returned a valid version-2 archive, while a disallowed Origin still returned
+403. Unknown and escaped paths remained 404. Both chess sites remained HTTP 200.
+
+Twenty independent laptop requests through public DNS/TLS then passed canonical
+HTTP/HTTPS, both aliases over HTTP/HTTPS, page-byte equality, health, new-chat
+POST, Origin rejection, and unknown/escaped paths. Header-only requests with
+`Content-Length: 65537` returned 413 on `/api/new` both with and without a query.
+An initial full oversized upload was reset while the backend rejected it early;
+the header-only checks verified the established limit without that upload race.
+No inference or existing conversation was accessed. All PIDs remained unchanged:
+GPT-2 **43867**, Caddy **4341**, Astra **4149**, and Arcturus **4313**.
+Evidence/scripts remain ignored under `outputs/deploy`, including
+`query-params-smoke-20261003.json`. This verifies URL handling, not streaming or
+new model-performance behavior.

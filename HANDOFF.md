@@ -103,6 +103,13 @@ HTTPS API test also passed exact preview, archive transfers, and isolation.
 Native browser Save As automation was not completed; only API archive round
 trips are verified. Autostart is enabled but has not been tested by reboot.
 
+The canonical Caddy site now uses `rewrite * ?` to ignore all query parameters
+before forwarding, including Facebook's `fbclid`. HTTP/alias redirects can
+retain the query, which is ignored at the destination. The October 3 fix used
+a validated SIGUSR1 reload; GPT-2/Caddy/chess PIDs, units, and the GPT-2 environment
+were unchanged. Public HTTP/HTTPS/alias, API, Origin, body-limit, and escaped-path
+checks passed without generation. The loopback Python routes remain strict.
+
 The existing Caddy 2.11.4 process keeps `admin off` and has no `ExecReload`.
 Its file-based `caddy run` supports SIGUSR1 reloads (require Caddy >=2.11.0).
 Its Caddyfile is individually
