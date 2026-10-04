@@ -86,12 +86,16 @@ as `gpt-2` into `/home/gpt-2/GPT-2-tools`, with origin set to GitHub. That is
 the existing checkout to inspect/update; later reviewed commits can be moved
 by bundle without changing the benchmark's recorded source revision.
 
-`codex/gpt2-public` has **not been published to GitHub**. Cloning the current
-GitHub `main` will not supply the public service. Until the reviewed public
-branch is published, transfer a Git bundle containing its reviewed commit and
-clone that bundle as `gpt-2`. After publication, GitHub cloning with an explicit
-public-branch/commit selection becomes an alternative. The public branch split
-from chat commit `3657a81`; fresh-host bundle commands are:
+The owner authorized development-branch publication on October 4, 2026.
+`codex/gpt2-public` is now on GitHub at reviewed commit `a1ee558`, alongside
+the chat and streaming branches; local/remote heads matched after publication.
+Cloning GitHub `main` will not supply the public service. Select an explicit
+published branch and reviewed commit, or transfer a reviewed Git bundle and
+clone that bundle as `gpt-2`. The streaming branch also contains the local
+seed-policy preview, which is not deployed; keep production at the accepted
+source revision documented above. Publication changes no running service.
+The public branch split from chat commit `3657a81`; fresh-host bundle commands
+remain valid:
 
 ```bash
 git clone /path/to/reviewed-gpt2-public.bundle /home/gpt-2/GPT-2-tools

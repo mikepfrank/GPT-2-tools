@@ -71,8 +71,14 @@ Source commit `663c413` was transferred by Git bundle into
 `/home/gpt-2/GPT-2-tools`, with its origin set to GitHub; no push was needed.
 The installation and benchmark evidence refers to that source revision;
 later reviewed commits can be transferred by bundle without rewriting that
-provenance. `codex/gpt2-public` has not been published to GitHub, so use reviewed
-Git bundles until publication is authorized.
+provenance. On October 4 the owner authorized publication of all development
+branches. GitHub now has `codex/gpt2-chat` (`3657a81`), `codex/gpt2-public`
+(`a1ee558`), and `codex/gpt2-streaming` (seed-policy source `78ebbdc`, followed
+by publication documentation). Remote heads were verified against local refs
+after an atomic non-forced push, and all three branches track their same-name
+origin branches. Private outputs/evidence remain excluded; publication does
+not deploy the local seed-policy preview. Reviewed Git bundles remain usable,
+or select an explicit published branch and reviewed commit from GitHub.
 The verified runtime uses namespaced Python 3.12.12, CPU PyTorch 2.14.1,
 Transformers 5.18.0, and Tokenizers 0.23.2 in
 `/home/gpt-2/.venvs/gpt2-public`, with
