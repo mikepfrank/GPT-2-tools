@@ -1332,7 +1332,135 @@ application/client source SHA-256s are retained in ignored private evidence
 `outputs/deploy/seed-policy-local-smoke-20261004-v2.json`, SHA-256
 `286b8b63582c399e3dfb0fa370edd323fbd9682a39c87b2741956b64c0dee769`.
 Browser lifecycle checks were model-free; this live check used synthetic HTTP
-jobs and did not inspect the owner's browser chats. **Local owner testing is
-pending.** The public Lightsail service, frozen `5389a30` source, Caddy, chess
-services, and production/rollback configuration were not changed in this work.
-Refresh **http://localhost:8891/** to try the new policy.
+jobs and did not inspect the owner's browser chats. The owner later accepted
+the local test and authorized the production update recorded below. The local
+implementation work itself did not change the public Lightsail service,
+frozen `5389a30` source, Caddy, chess services or rollback configuration.
+
+## Automatic seed advancement: production update (2026-10-04)
+
+The owner accepted the streaming laptop test and explicitly authorized public
+deployment. A subsequent status report confirmed the app had closed before
+activation; production still had its unchanged `5389a30` checkout, PID 58714,
+original streaming override and the earlier fixed-seed behavior. No partial
+service switch had occurred. The resumed rollout uses a durable server unit
+so a client or app disconnect does not interrupt retention or activation.
+
+The exact accepted application commit
+`78ebbdc254249562187c06db8ec9c3cb7dd0e87b` was cloned from the published branch
+into `/home/gpt-2/GPT-2-releases/seed-78ebbdc`, then frozen root-owned and
+read-only. All **60 tracked files** have staged hashes. The chat backend and
+both HTML files match the locally accepted source hashes:
+
+| File | SHA-256 |
+| --- | --- |
+| `src/gpt2_local/chat.py` | `9a96a673a8db31ce41846770b45fc0fde75aabd561e3a417a3ef2ff7d473fe5d` |
+| `src/gpt2_local/web/public.html` | `bc73d2205be3de546c4f977a5dac78d34dbf290e318564df4f29598331621f72` |
+| `src/gpt2_local/web/chat.html` | `02e83dc9fb9e046500b34f281258393f778dc9bd72c1514a438e7a56dca8c713` |
+
+The pinned Amazon Linux runtime passed its complete application suite:
+**239 tests, OK with one skip, in 13.959 seconds**. The first nonroot invocation
+hit ownership assertions in root-only deployment fixtures; rerunning as root
+passed. That fixture mismatch was not an application inference failure. The
+suite performs no real model generation. No dependencies or shared editable
+installation changed. The previously passed 37 frontend tests apply to the
+identical accepted HTML source.
+
+The final frozen update/promotion/exclusivity tooling passed **40 model-free
+Linux tests in 0.327 seconds** before preparation. Coverage includes full
+drain/600-second retention for update and rollback, single-model starts,
+PID-zero retry cancellation, short-write and failed daemon-reload recovery,
+atomic manifest failure, refusing source/override/loaded-setting drift,
+retention-window drift leaving the existing model gated and running, unchanged
+chess/preview control, and restoration of the original polling rollback
+contract after returning to the previous streaming release. Failure and rollback
+paths were exercised with synthetic service fixtures, not live failure injection
+or a live production rollback.
+
+| Frozen tooling | SHA-256 |
+| --- | --- |
+| `scripts/lightsail-update.py` | `4292bf7688cdd826b802836245e78e815119266f1a306ee4b084fb359a24f96d` |
+| `tests/test_lightsail_update.py` | `6dc870170a8538a3b523ce03d310135e41deab1711a0648c8edb24e8530791b2` |
+| Preserved promotion helper | `59fa0430ef4fadfbe3f5fa0db31b064787c92d5327fad4d4835977a07841ace0` |
+| Preserved preview helper | `77c7175dd9093d955e8d8475b2a5f028f7c1c03c1c8675a2032707d4d431df99` |
+
+Preparation completed without live changes at **19:24:41.381777 UTC**. The
+durable unit `gpt2-seed-update-20261004-1925` started at **19:24:56 UTC**, applied
+the POST gate at **19:25:02.155623 UTC**, and began the complete 600-second
+retention wait at **19:25:10.321480 UTC**. The new override selects only the new
+release path; its hash is
+`a64825106023ba5603872dd73eaf3a1f029b2332ea4dbe3cf1f1fb776f6452a4`.
+The old override (`524068351cc10be7557e08344c5e2ee5cc6e92a07dc51f720eac9fc76fed106a`)
+and original promotion manifest
+(`f49cad63c1269ce6a186e1c2c1af8bb8a077ebcde01bfdfc6ee8cff7de403f39`)
+remain preserved for the controlled streaming rollback. Private baseline and
+retention-stage copies have SHA-256s
+`80b2f0d5677c789cb1f4e0ac78d883c28a894fe829002ecb56211f78014bc9fc` and
+`76c78b0f22318d354c095e329ecc0c6deb2cbed51bbf13d2b46bdc14a2367479`.
+
+The full retention period ended at **19:35:10.562603 UTC**. The durable helper
+restored the exact active Caddy bytes at **19:35:21.991938 UTC**, then emitted
+`production_version_updated` at **19:35:22.787953 UTC / 2:35 p.m. CDT**, exited
+successfully, and left production active/enabled as PID **91398** selecting
+the new frozen release. Preview stayed inactive. Direct/TLS streaming-ready
+health, pinned CPU FP32 model identity and limits passed before admission opened.
+
+An independent read-only verification at **19:36:08 UTC** passed the completed
+schema-3 stage, all 60 release hashes/protection checks, exact new override and
+loaded argv/PYTHONPATH/account, preserved base units/env/drop-ins/guards, previous
+streaming/polling sources and stage snapshots, sole known model/cgroup, original
+Caddy bytes/inode/attributes, test-domain redirect, and both chess HTTPS sites.
+It checked the unchanged Caddy/chess PIDs **4341 / 4149 / 4313**. Three short
+certificate-verified canonical HTTPS generations then passed between
+**19:36:09 and 19:36:39 UTC**:
+
+| Action | Actual seed | Saved next seed | Input / output tokens | Generation seconds | Server first visible seconds | Decode tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| New message | 100 | 101 | 144 / 16 | 8.627 | 3.135 | 2.731 |
+| New message | 101 | 102 | 178 / 16 | 8.831 | 3.466 | 2.798 |
+| Regenerate latest reply | 102 | 103 | 178 / 16 | 8.799 | 3.472 | 2.817 |
+
+The client issued exactly three generation POSTs without retries, persisted
+acknowledged IDs before subscription, disconnected/reconnected during the first
+active generation, and verified that provisional updates never changed the
+committed source seed/archive. Canonical and repeated terminal GETs preserved
+the same actual/requested seed and successor controls, exact raw IDs and safe
+provisional prefixes. Export/import preserved next seed and historical metadata.
+Regeneration reused the preceding exact prompt, kept two human rounds, and
+preserved the seed-101 candidate. Query stripping, exact-Origin rejection,
+existing 308 aliases and test-origin 307/no-store path/query preservation passed.
+The client ran on Lightsail over normal public DNS and verified TLS, so its
+3.150/3.483/3.496-second first-visible observations do not measure an external
+browser's network path or painting. Server timings use their own clock.
+
+Independent after-verification at **19:37:53 UTC** passed with no warnings, the
+same production/chess/Caddy PIDs, ready/idle health, and no new memory high/max,
+OOM or CPU-throttling events. Production CPU usage rose **52.153 seconds** over
+the **104.519-second** before/after interval: about **12.47%** average of the
+four-vCPU host, including the intervening idle time. Process RSS was
+**6,627,524 KiB**, process-lifetime peak RSS **6,686,316 KiB**, and host available
+memory **14,315,596 KiB**. Cgroup current/peak were 464,830,464 / 525,828,096
+bytes; those charge counters include shared-cache accounting and are not the
+model's physical memory footprint. The existing 8.5/9 GiB limits and swap-free
+8 GiB startup floor remain unchanged. Three capped jobs do not establish
+sustained throughput, burst billing, repetition-frequency improvement, or
+cold-start/near-full-context memory capacity. A separate certificate-verified
+health request from the Windows laptop's external network also returned
+ready/idle streaming CPU FP32 identity and unchanged limits.
+
+Byte-identical private evidence was copied locally under ignored
+`outputs/deploy/`; no owner browser archive was inspected or modified:
+
+| Evidence/client | SHA-256 |
+| --- | --- |
+| `seed-production-before-20261004.json` | `4b7cf27602dab06559ab185c5fc4dea072a20fb74272a8828b3e9422ba92e3b4` |
+| `seed-production-after-20261004.json` | `0c4bdfd3082a0a1b11167468990ef9df702d9e1468639c9619a0e58206eac2cb` |
+| `seed-production-smoke-next-lightsail-20261004.json` | `f9835bce4a2329476da60146471c27039aba854016f5b1e0974c3a6680de2b7b` |
+| `seed-update-completed-manifest-20261004.json` | `3e296d4f89fe9c370e32364cf18b35f5aa7505c38091f5ea2b1a0759155226b8` |
+| `seed-production-smoke.py` | `a62a2cd301930363bc6924e20fc4c88299a4a2d4aea3c9c25037cd5617c7b2a0` |
+| `verify-seed-production.py` | `7b15e0aa569194064664732444922d47feb48cb8aebce74d7717ff63bee115f6` |
+
+Production is ready for the owner's fresh browser test after refreshing
+`https://gpt2-chat.com/`. Operator instructions and two-step polling rollback
+are in `docs/SEED-UPDATE.md`. Reboot/autostart behavior and live rollback were
+not retested; existing enabled state and guarded fixture paths were verified.

@@ -51,12 +51,21 @@ and unchanged chess/Caddy PIDs. Two certified canonical HTTPS jobs passed
 incremental SSE/reconnect, canonical token/settings/archive/regeneration and
 origin/query/redirect checks. Independent after-verification at
 `05:01:30.491948 UTC` passed with no warnings, unchanged PIDs and an idle
-service. The handoff selects frozen application `5389a30`
+service. That initial rollout selected frozen application `5389a30`
 through an owned drop-in on the existing production unit, preserving the old
 `e5971db` checkout and env. See
 [`PRODUCTION-STREAMING.md`](PRODUCTION-STREAMING.md) for exact commands and
-safe rollback. The old preview helper's `--restore` is obsolete after promotion;
-use the production helper's `--rollback`.
+safe rollback. The old preview helper's `--restore` is obsolete after promotion.
+
+On October 4 the owner accepted the local automatic seed advancement test and
+authorized its production update. Exact application `78ebbdc` is now selected
+from `/home/gpt-2/GPT-2-releases/seed-78ebbdc`, a separate root-owned read-only
+release. The durable update emitted `production_version_updated` at
+**19:35:22.787953 UTC**, with production PID **91398** and preview inactive.
+See [SEED-UPDATE.md](SEED-UPDATE.md) for current operation and rollback. First
+restore the previous streaming release with that helper before using the older
+promotion helper to return to polling. Existing source, runtime, units, model,
+limits and chess/Caddy process boundaries remain preserved.
 
 Real-browser generation, pending-job reload without resubmission, completed-chat
 recovery, and alias navigation passed. A real-model near-full HTTPS request
@@ -92,8 +101,9 @@ the chat and streaming branches; local/remote heads matched after publication.
 Cloning GitHub `main` will not supply the public service. Select an explicit
 published branch and reviewed commit, or transfer a reviewed Git bundle and
 clone that bundle as `gpt-2`. The streaming branch also contains the local
-seed-policy preview, which is not deployed; keep production at the accepted
-source revision documented above. Publication changes no running service.
+seed-policy change, now deployed as the pinned release documented above.
+Select the accepted commit explicitly; branch publication alone changes no
+running service.
 The public branch split from chat commit `3657a81`; fresh-host bundle commands
 remain valid:
 

@@ -3,7 +3,7 @@
 Status: **implemented; laptop and hosted previews verified and owner-accepted;
 production streaming active, October 3 CDT / October 4 UTC,
 2026**.
-The automated suites pass 197 Python tests and 30 JavaScript tests. Real-model
+The initial streaming suites passed 197 Python tests and 30 JavaScript tests. Real-model
 greedy/sample parity, near-context generation, and browser streaming/reload
 checks passed. This work lives in `.worktrees/gpt2-streaming`, on
 `codex/gpt2-streaming`, based on public-service commit
@@ -11,6 +11,10 @@ checks passed. This work lives in `.worktrees/gpt2-streaming`, on
 preview first** and accepted it. The owner has now authorized a temporary
 GPT-2-only production pause for the hosted preview, accepted the hosted
 incremental display, and explicitly requested production rollout.
+
+The later automatic seed advancement change is now deployed as the accepted
+frozen `78ebbdc` release. See [SEED-UPDATE.md](SEED-UPDATE.md) for current
+deployment/rollback and `VERIFICATION.md` for its tests and live seed sequence.
 
 The goal is to display a reply as GPT-2 generates it while preserving the
 current model, sampling behavior, chat archives, and recovery rules. Keep the

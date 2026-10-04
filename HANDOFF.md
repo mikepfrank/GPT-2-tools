@@ -76,8 +76,8 @@ branches. GitHub now has `codex/gpt2-chat` (`3657a81`), `codex/gpt2-public`
 (`a1ee558`), and `codex/gpt2-streaming` (seed-policy source `78ebbdc`, followed
 by publication documentation). Remote heads were verified against local refs
 after an atomic non-forced push, and all three branches track their same-name
-origin branches. Private outputs/evidence remain excluded; publication does
-not deploy the local seed-policy preview. Reviewed Git bundles remain usable,
+origin branches. Private outputs/evidence remain excluded; source publication
+alone did not deploy the seed-policy preview. Reviewed Git bundles remain usable,
 or select an explicit published branch and reviewed commit from GitHub.
 The verified runtime uses namespaced Python 3.12.12, CPU PyTorch 2.14.1,
 Transformers 5.18.0, and Tokenizers 0.23.2 in
@@ -137,7 +137,7 @@ do not predict GPT-2 inference throughput.
 
 ## Streaming previews
 
-### Next-generation seeds (local preview)
+### Next-generation seeds (production active)
 
 The owner requested automatic seed advancement after every generation, with
 local testing before public deployment. The current development policy treats
@@ -151,10 +151,19 @@ and repeated result GETs never consume a seed.
 
 Imports preserve saved controls, including older fixed-seed archives, and
 never rewrite historical metadata. No archive schema or RNG/sampling change
-is needed. The public service remains at its frozen `5389a30` build with the
-earlier seed policy until the owner accepts the local test and authorizes
-deployment. Local validation and the current preview PID are recorded below
-and in `VERIFICATION.md`.
+is needed. The owner accepted the local test and authorized deployment on
+October 4. The exact `78ebbdc254249562187c06db8ec9c3cb7dd0e87b` application
+was cloned into the frozen, root-owned
+`/home/gpt-2/GPT-2-releases/seed-78ebbdc` release. The durable unit
+`gpt2-seed-update-20261004-1925` started at 19:24:56 UTC, retained results for
+the full 600 seconds, and emitted `production_version_updated` at
+**19:35:22.787953 UTC / 2:35 p.m. CDT**. Production PID **91398** selects the
+new release and is active/enabled; preview is inactive. The private schema-3
+stage at `/home/astra/.config/astra-chess/gpt2-seed-update-stage-20261004`
+records completion. The old streaming/polling releases and original promotion
+stage remain preserved. See [`docs/SEED-UPDATE.md`](docs/SEED-UPDATE.md) for
+update/rollback boundaries and `VERIFICATION.md` for the independent and live
+checks; local preview evidence and PID are below.
 
 Streaming work starts from public-service tip `e5971db` in the isolated
 `.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose

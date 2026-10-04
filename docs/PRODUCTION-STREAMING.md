@@ -1,5 +1,12 @@
 # Production streaming operations
 
+The automatic seed policy update is **active** as of October 4, 2026,
+19:35:22 UTC. Application `78ebbdc` runs as production PID 91398 from the
+separate frozen release described in [SEED-UPDATE.md](SEED-UPDATE.md).
+The initial streaming rollout below remains historical evidence.
+The seed update helper's `--rollback` must first restore
+the previous streaming release before the polling rollback below can run.
+
 Status: **owner accepted the hosted preview and authorized production rollout;
 production streaming active, October 3 CDT / October 4 UTC, 2026**. Preparation passed
 on Amazon Linux at `2026-10-04 04:47:57.130018 UTC`, after 14 promotion tests and
@@ -17,7 +24,7 @@ after-verification at **05:01:30.491948 UTC** passed with no warnings and the
 same production/chess/Caddy PIDs. Exact reproduced evidence belongs in
 [`VERIFICATION.md`](../VERIFICATION.md).
 
-The active frozen application is **`5389a30`** at
+The initially promoted frozen application was **`5389a30`** at
 `/home/gpt-2/GPT-2-streaming-preview`. The original production checkout
 `/home/gpt-2/GPT-2-tools` stays at **`e5971db`**, and its installed base unit and
 `/etc/gpt2-public.env` remain unchanged. Promotion installed only the owned
@@ -85,6 +92,10 @@ undrainable accepted jobs. Promotion failure attempts safe recovery of the
 accepted preview; uncertain/drifting state remains gated for operator review.
 
 ## Roll back to the original polling production build
+
+**If the seed update is active, first complete its rollback to the previous
+streaming release**, using [SEED-UPDATE.md](SEED-UPDATE.md). The commands below
+require that original streaming override/source and refuse the newer selection.
 
 **The old preview helper's `--restore` is obsolete after promotion.** Use the
 promotion helper's `--rollback` with the same production stage and a fresh
