@@ -256,6 +256,25 @@ old candidate as today. Failure restores it and the draft. Reconnection does
 not advance the seed or regenerate. Preserve independent tab storage,
 import/export format version 2, seeded examples, and Enter/Shift+Enter behavior.
 
+### Next-generation seed policy in the local development preview
+
+The seed control is now the seed for the next generation. After a successful
+new reply or regeneration, canonical session/archive settings store its
+successor modulo `2**63`. The completed reply's generation record keeps the
+seed actually used. Regeneration uses the displayed/stored next seed as-is,
+so the sequence advances once per successful generation rather than twice
+when replacing a reply. Manual seed changes are honored; blank uses the
+stored next seed. Failed/rejected jobs, previews, provisional stream tokens,
+reconnects and repeated result GETs leave committed seed settings intact.
+Greedy decoding still advances the field even though it ignores seed values.
+
+The existing completion handlers apply the authoritative returned settings;
+the browser does no seed arithmetic. Export/import/reload preserve the next
+seed along with historical actual seeds, using schema version 2. Older
+archives retain their saved seed as the next seed without a hidden migration.
+This change is local-only pending owner testing; the public streaming build
+and its deployment/rollback state remain unchanged.
+
 ## Implement and verify in stages
 
 1. **Runtime observer and decoder.** Add the optional hook and presentation
@@ -333,11 +352,12 @@ and runs the existing pinned environment without an editable reinstall. It
 uses CPU FP32, offline mode, two Torch threads, loopback port 8891, streaming,
 the normal 256-token service cap, and the 8 GiB available-memory guard.
 
-The current session uses a separate durable launch of the private parity
-harness, which will reuse its single tested runner for serving. Do not run the
-foreground launcher while that process is loading, testing, or serving on
-8891. The convenience launcher starts the implemented service directly and
-does not repeat the private parity trials.
+The current seed-policy preview is a detached WSL service at PID 1355,
+replacing the verified idle parity harness's PID 341. Its private log and PID
+are `outputs/deploy/seed-preview-20261004.log` and `seed-preview.pid`.
+Do not run the foreground launcher while that process is loading or serving
+on 8891. The convenience launcher starts the implemented service directly and
+does not repeat the historical private parity trials.
 
 The equivalent command inside Ubuntu WSL is:
 

@@ -262,7 +262,9 @@ class ChatSession:
         self.rounds = prepared.retained_rounds + [new_round]
         self.transcript.append(new_round)
         self.last_generation = generation
-        self.settings = effective_settings
+        # The control/archive seed is for the next generation. Historical
+        # records retain the seed used above; failures never reach this commit.
+        self.settings = replace(effective_settings, seed=(effective_settings.seed + 1) % (2**63))
 
     def can_regenerate(self) -> bool:
         return bool(
@@ -296,8 +298,7 @@ class ChatSession:
                 f"The original prompt needs {input_tokens} tokens; reduce the reply limit "
                 f"to at most {MODEL_CONTEXT_TOKENS - input_tokens} to regenerate it unchanged"
             )
-        starting = resolve_seed(settings, self.settings.seed)
-        effective = replace(starting, seed=(starting.seed + 1) % (2**63))
+        effective = resolve_seed(settings, self.settings.seed)
         return PreparedInput(last.human, prompt, input_tokens, list(self.rounds[:-1]), self.header), effective
 
     def regeneration_preview(self, settings: GenerationSettings, count_tokens: Callable[[str], int]) -> dict[str, object]:
@@ -327,7 +328,7 @@ class ChatSession:
         self.rounds[-1] = replacement
         self.transcript[-1] = replacement
         self.last_generation = generation
-        self.settings = effective
+        self.settings = replace(effective, seed=(effective.seed + 1) % (2**63))
 
 
 class ChatApplication:

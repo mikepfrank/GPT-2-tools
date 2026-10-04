@@ -96,7 +96,9 @@ class PublicApplicationTests(unittest.TestCase):
         restored = fresh.imported({"chat": saved})
         self.assertEqual(restored["turns"], result["state"]["turns"])
         self.assertEqual(restored["context_text"], result["state"]["context_text"])
-        self.assertEqual(restored["settings"]["seed"], "42")
+        self.assertEqual(restored["settings"]["seed"], "43")
+        self.assertEqual(restored["chat"]["settings"]["seed"], "43")
+        self.assertEqual(restored["last_generation"]["seed"], "42")
         self.assertNotEqual(restored["session_id"], result["state"]["session_id"])
         with self.assertRaises(ServiceError):
             fresh.job(str(result["job_id"]))
@@ -111,6 +113,66 @@ class PublicApplicationTests(unittest.TestCase):
         self.assertEqual(len(second["state"]["turns"]), 1)
         self.assertEqual(self.archive, before)
         self.assertFalse(hasattr(self.app, "sessions"))
+
+    def test_independent_queued_archive_clones_have_their_own_next_seed_and_stable_results(self) -> None:
+        before = copy.deepcopy(self.archive)
+        controls = {**self.settings, "seed": None}
+        self.runner.release.clear()
+        first_job = self.app.submit({"chat": self.archive, "message": "Browser one", "settings": controls}, "a")
+        self.assertTrue(self.runner.started.wait(1))
+        second_job = self.app.submit({"chat": self.archive, "message": "Browser two", "settings": controls}, "b")
+        self.assertNotIn("state", self.app.job(str(first_job["job_id"])))
+        self.assertNotIn("state", self.app.job(str(second_job["job_id"])))
+        self.assertEqual(self.archive, before)
+        self.runner.release.set()
+        results = [self.wait_done(job) for job in (first_job, second_job)]
+        for job, result in zip((first_job, second_job), results):
+            state = result["state"]
+            self.assertEqual(state["last_generation"]["seed"], "42")
+            self.assertIsNone(state["last_generation"]["requested_seed"])
+            self.assertEqual(state["settings"]["seed"], "43")
+            self.assertEqual(state["chat"]["settings"]["seed"], "43")
+            snapshot = copy.deepcopy(result)
+            for _ in range(3):
+                self.assertEqual(self.app.job(str(job["job_id"])), snapshot)
+        self.assertEqual([settings.seed for _, settings in self.runner.calls], [42, 42])
+        self.assertEqual(self.archive, before)
+        next_job = self.app.submit({"chat": results[0]["state"]["chat"], "message": "Browser one continues", "settings": controls}, "a")
+        next_state = self.wait_done(next_job)["state"]
+        self.assertEqual(next_state["last_generation"]["seed"], "43")
+        self.assertEqual(next_state["settings"]["seed"], "44")
+
+    def test_message_regenerate_message_carries_next_seed_through_browser_archives(self) -> None:
+        first = self.wait_done(self.submit())["state"]
+        saved = first["chat"]
+        before = copy.deepcopy(saved)
+        automatic = {**self.settings, "seed": None}
+        regenerated = self.wait_done(self.app.submit({"chat": saved, "settings": automatic}, "client", regenerate=True))["state"]
+        self.assertEqual(saved, before)
+        self.assertEqual(regenerated["last_generation"]["seed"], "43")
+        self.assertIsNone(regenerated["last_generation"]["requested_seed"])
+        self.assertEqual(regenerated["settings"]["seed"], "44")
+        self.assertEqual(regenerated["chat"]["settings"]["seed"], "44")
+        self.assertEqual(regenerated["turns"][-1]["previous_responses"][0]["generation"], first["last_generation"])
+        next_state = self.wait_done(self.app.submit({"chat": regenerated["chat"], "message": "Next question", "settings": automatic}, "client"))["state"]
+        self.assertEqual(next_state["last_generation"]["seed"], "44")
+        self.assertEqual(next_state["settings"]["seed"], "45")
+        self.assertEqual(next_state["chat"]["settings"]["seed"], "45")
+        self.assertEqual([settings.seed for _, settings in self.runner.calls], [42, 43, 44])
+
+    def test_failed_final_archive_validation_discards_clone_seed_advance_and_retry_reuses_input(self) -> None:
+        before = copy.deepcopy(self.archive)
+        with patch.object(self.app, "_state", side_effect=ValueError("synthetic final archive validation failure")):
+            failed = self.wait_done(self.submit())
+        self.assertEqual(failed["status"], "failed")
+        self.assertNotIn("state", failed)
+        self.assertIsNone(self.app._jobs[str(failed["job_id"])].session)
+        self.assertEqual(self.archive, before)
+        retried = self.wait_done(self.submit())["state"]
+        self.assertEqual([settings.seed for _, settings in self.runner.calls], [42, 42])
+        self.assertEqual(retried["last_generation"]["seed"], "42")
+        self.assertEqual(retried["settings"]["seed"], "43")
+        self.assertEqual(self.archive, before)
 
     def test_fifo_has_one_inference_and_preview_remains_available(self) -> None:
         self.runner.release.clear()
@@ -190,11 +252,16 @@ class PublicApplicationTests(unittest.TestCase):
         with patch("sys.stderr") as stderr:
             failed = self.wait_done(self.submit())
         self.assertEqual(failed["status"], "failed")
+        self.assertNotIn("state", failed)
         self.assertNotIn("private", failed["error"])
         stderr.write.assert_not_called()
         self.assertEqual(self.archive, before)
         self.runner.failure = None
-        self.assertEqual(self.wait_done(self.submit())["status"], "complete")
+        retried = self.wait_done(self.submit())
+        self.assertEqual(retried["status"], "complete")
+        self.assertEqual(retried["state"]["last_generation"]["seed"], "42")
+        self.assertEqual(retried["state"]["settings"]["seed"], "43")
+        self.assertEqual([settings.seed for _, settings in self.runner.calls], [42, 42])
 
     def test_preview_and_regeneration_preserve_original_and_candidate_history(self) -> None:
         first = self.wait_done(self.submit())
@@ -206,7 +273,10 @@ class PublicApplicationTests(unittest.TestCase):
         replacement = self.wait_done(job)["state"]
         self.assertEqual(saved, before)
         self.assertEqual(replacement["last_generation"]["prompt_text"], first["state"]["last_generation"]["prompt_text"])
-        self.assertEqual(replacement["last_generation"]["seed"], "43")
+        self.assertEqual(replacement["last_generation"]["seed"], "42")
+        self.assertEqual(replacement["last_generation"]["requested_seed"], "42")
+        self.assertEqual(replacement["settings"]["seed"], "43")
+        self.assertEqual(replacement["chat"]["settings"]["seed"], "43")
         self.assertEqual(len(replacement["turns"][-1]["previous_responses"]), 1)
         self.assertEqual(preview["context_text"], replacement["last_generation"]["prompt_text"])
 
@@ -547,6 +617,9 @@ class StreamingHTTPTests(unittest.TestCase):
         self.assertEqual(set(payload), {"version", "seq"})
         result = self.app.job(identifier)
         self.assertEqual(result["state"]["turns"][-1]["assistant"], " A deterministic reply.")
+        self.assertEqual(result["state"]["last_generation"]["seed"], "42")
+        self.assertEqual(result["state"]["settings"]["seed"], "43")
+        self.assertEqual(result["state"]["chat"]["settings"]["seed"], "43")
         self.assertEqual(len(self.runner.calls), 1)
         self.assertEqual(result["delivery"]["decoding_tokens_per_second"], 100)
         self.assertLessEqual(result["delivery"]["first_token_seconds"], result["delivery"]["first_visible_seconds"])

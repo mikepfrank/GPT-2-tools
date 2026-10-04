@@ -123,7 +123,7 @@
         <input id="temperature" type="number" min="0" step="0.05" value="0.8" required>
       </div>
       <div>
-        <label for="seed">Seed <span style="font-weight: 400">(optional)</span></label>
+        <label for="seed">Next seed <span style="font-weight: 400">(optional)</span></label>
         <input id="seed" type="text" inputmode="numeric" placeholder="Random" autocomplete="off" spellcheck="false">
       </div>
       <div>
@@ -139,7 +139,7 @@
         </select>
       </div>
       <button id="new-chat" type="button">New chat</button>
-      <p class="control-note">Leave Seed blank before New chat to choose a seed; it is shown and reused for each reply. Temperature 0 uses greedy decoding and ignores the seed. Example rounds are applied when you choose New chat.</p>
+      <p class="control-note">The seed is for the next generation and advances by 1 after each successful reply; the maximum wraps to 0. Blank chooses a starting seed for New chat, or uses an existing chat's saved next seed. Temperature 0 ignores the seed. Example rounds apply with New chat.</p>
     </section>
 
     <section class="panel" aria-labelledby="context-title">
@@ -162,7 +162,7 @@
           <button id="send" class="primary" type="submit">Send message</button>
         </div>
       </div>
-      <p id="regenerate-note" class="regenerate-note">Regenerate uses the same input prompt with the current temperature and reply limit. It replaces the latest reply and increases the seed by 1 (blank uses the chat seed); the maximum seed wraps to 0. Choose a temperature above 0 to sample an alternative.</p>
+      <p id="regenerate-note" class="regenerate-note">Regenerate uses the same input prompt with the current temperature, reply limit, and next seed. It replaces the latest reply and advances the seed after success. Choose a temperature above 0 to sample an alternative.</p>
     </form>
     <p id="status" role="status" aria-live="polite">Connecting to the local model…</p>
 
@@ -294,7 +294,7 @@
       sessionId = state.session_id;
       canRegenerate = state.can_regenerate === true;
       elements.regenerate.disabled = busy || !canRegenerate;
-      elements.regenerate.title = canRegenerate ? "Replace the latest reply using the next seed." :
+      elements.regenerate.title = canRegenerate ? "Replace the latest reply using the next generation seed." :
         "Available after a reply with its original generation record has been generated.";
       rememberSession(sessionId);
       renderContext(state);
@@ -562,15 +562,15 @@
         return;
       }
       setBusy(true);
-      setStatus("Preparing the last input prompt with the next seed…");
+      setStatus("Preparing the original input for another reply…");
       const body = { session_id: sessionId, settings: controls };
       let previewShown = false;
       try {
         const preview = await request("/api/regenerate-preview", body);
         applyState(preview);
         previewShown = true;
-        const nextSeed = preview.settings && preview.settings.seed;
-        const seedNote = nextSeed === null || nextSeed === undefined ? "the next seed" : `seed ${nextSeed}`;
+        const generationSeed = preview.settings && preview.settings.seed;
+        const seedNote = generationSeed === null || generationSeed === undefined ? "the next generation seed" : `seed ${generationSeed}`;
         setStatus(`Regenerating the last reply with ${seedNote}… CPU generation may take a while.`);
         const state = await request("/api/regenerate", body);
         applyState(state);

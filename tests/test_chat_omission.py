@@ -248,7 +248,8 @@ class ChatOmissionTests(unittest.TestCase):
                 restored.regenerate(GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
                 self.assertEqual(self.runner.calls[-1][0], original_prompt)
                 self.assertEqual(restored.header, original_header)
-                self.assertEqual(restored.last_generation["seed"], "124")
+                self.assertEqual(restored.last_generation["seed"], "123")
+                self.assertEqual(restored.settings.seed, 124)
                 self.assertEqual(restored.dropped_rounds, 1)
 
     def test_first_new_reply_to_legacy_dropped_chat_adds_marker_without_more_eviction(self) -> None:

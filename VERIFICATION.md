@@ -1262,3 +1262,77 @@ preview helper's `--restore` is obsolete after promotion: exact durable
 accepted work before removing only the owned override and restoring the
 original polling production build. Export/import transfers a test-origin chat
 to canonical browser storage.
+
+## Automatic seed advancement: local preview (2026-10-04)
+
+The owner requested a successor seed after every generation, with local testing
+before public deployment. Shared chat generation now uses the selected/stored
+seed unchanged and commits its successor modulo `2**63` only after successful
+inference and validation. This applies to both new messages and regeneration;
+regeneration no longer pre-increments. Session/control/archive settings mean
+**next seed**; historical actual/requested seeds, input prompts, output IDs and
+candidate records remain exact. Manual seed entry is honored, blank uses the
+stored next seed, and greedy completions advance the field although their
+sampling ignores seeds. Imports preserve older saved seeds as the next seed
+without rewriting history or changing schema version 2.
+
+The complete model-free Python suite passed **242 tests in 16.083 seconds**
+under the pinned WSL Python runtime. All **37 JavaScript browser tests** passed
+with Node, and both inline scripts compile. Coverage exercises consecutive
+message/regeneration transactions, explicit zero and values above JavaScript's
+safe-integer range, maximum-seed wrap, legacy archives and omission prompts,
+preview/rejection/failure preservation, queued independent browser clones,
+final archive-validation failure, export/import/offline reload, lost-response
+recovery, streaming reconnect and repeated terminal GETs. Actual seed and next
+seed assertions remain separate; client code performs no seed arithmetic.
+
+The owned parity-preview PID **341** was command-verified and idle before
+SIGTERM. Only after it exited and no other known GPT-2 process remained, the
+local service started as WSL PID **1355** on **127.0.0.1:8891**, using this
+worktree's `PYTHONPATH`, the existing `~/.venvs/gpt2-xl` runtime, offline pinned
+CPU FP32 GPT-2 XL, two Torch threads, streaming, the 256-token service cap and
+unchanged 8 GiB startup floor. Ready/idle HTTP health passed. No dependency
+reinstall, shared editable-package change, browser-storage modification or
+second model copy occurred. The active private log/PID are
+`outputs/deploy/seed-preview-20261004.log` and `seed-preview.pid`.
+
+The first synthetic trial acknowledged one seed-42 generation, but its
+50-millisecond GET polling exceeded the 240-request/minute local limit and
+received HTTP 429 before retaining the result. Its job ID was not persisted,
+so the canonical result was not recovered or claimed verified. The accepted
+12-token job finished naturally (14.7 seconds per the private server log);
+idle health was checked. That POST was not resubmitted. The aborted original
+client/evidence remain private as `seed-policy-local-smoke-too-fast.py`
+(SHA-256 `fc9b551dc23935094ae95be5e7d44cca3ddb235fc333d6e6127719cab9fdcbf7`)
+and `seed-policy-local-smoke-20261004.json`
+(`a48b3952a27d268f74fe42e651875e3f1bf4e550091b4bbdf734b1eb69f062ff`).
+The corrected client saves an acknowledged job ID immediately and polls at
+750-millisecond intervals. It ran a fresh sequence starting at seed 100.
+
+The corrected trial passed **three** deliberately short real-model jobs:
+
+| Action | Actual seed | Saved next seed | Input / output tokens | Generation seconds |
+| --- | ---: | ---: | ---: | ---: |
+| New message | 100 | 101 | 144 / 12 | 4.08 |
+| New message | 101 | 102 | 174 / 12 | 4.27 |
+| Regenerate latest reply | 102 | 103 | 174 / 12 | 4.23 |
+
+Each canonical state/archive stored the successor, each generation retained
+its actual/requested seed, and repeated result GETs returned identical state.
+Import preserved the next seed and complete transcript. Regeneration reused
+the exact preceding input prompt, kept two human rounds, and preserved the
+seed-101 candidate. Input archives remained unmodified, all jobs stayed within
+the 12-token cap, and final health was ready/idle. Four generations were
+accepted in total across the aborted and corrected trials; no statistical
+claim about repeated-response frequency or model-quality improvement follows
+from this short functional check.
+
+Full prompts, raw output IDs, controls, canonical archives, imports and exact
+application/client source SHA-256s are retained in ignored private evidence
+`outputs/deploy/seed-policy-local-smoke-20261004-v2.json`, SHA-256
+`286b8b63582c399e3dfb0fa370edd323fbd9682a39c87b2741956b64c0dee769`.
+Browser lifecycle checks were model-free; this live check used synthetic HTTP
+jobs and did not inspect the owner's browser chats. **Local owner testing is
+pending.** The public Lightsail service, frozen `5389a30` source, Caddy, chess
+services, and production/rollback configuration were not changed in this work.
+Refresh **http://localhost:8891/** to try the new policy.

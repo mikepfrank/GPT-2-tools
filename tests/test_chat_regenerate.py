@@ -94,7 +94,7 @@ class ChatRegenerateTests(unittest.TestCase):
         }])
         self.assertEqual(session.last_generation["seed"], "124")
         self.assertIsNone(session.last_generation["requested_seed"])
-        self.assertEqual(session.settings.seed, 124)
+        self.assertEqual(session.settings.seed, 125)
         self.assertEqual(session.state(len)["turns"][-1]["previous_responses"], session.rounds[-1].previous_responses)
         self.assertEqual(session.context_text(), session.header + session.rounds[-1].text())
         self.assertNotIn(first_round.assistant, session.context_text())
@@ -107,30 +107,46 @@ class ChatRegenerateTests(unittest.TestCase):
             session.regenerate(GenerationSettings(max_new_tokens=60, seed=None), self.runner)  # type: ignore[arg-type]
             self.assertEqual(self.runner.calls[-1][0], initial_prompt)
             self.assertEqual(self.runner.calls[-1][1].seed, expected_seed)
+            self.assertEqual(session.last_generation["seed"], str(expected_seed))
+            self.assertIsNone(session.last_generation["requested_seed"])
+            self.assertEqual(session.settings.seed, expected_seed + 1)
             self.assertEqual(len(session.rounds), 1)
             self.assertEqual(len(session.transcript), 1)
             self.assertEqual(len(session.rounds[-1].previous_responses), index)
         self.assertEqual([item["generation"]["seed"] for item in session.rounds[-1].previous_responses], ["123", "124", "125"])
+        self.assertEqual(session.settings.seed, 127)
         session.reply("Next synthetic question?", GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
         self.assertEqual(len(session.transcript), 2)
         self.assertEqual(session.transcript[-1].previous_responses, [])
-        self.assertEqual(session.last_generation["seed"], "126")
+        self.assertEqual(self.runner.calls[-1][1].seed, 127)
+        self.assertEqual(session.last_generation["seed"], "127")
+        self.assertIsNone(session.last_generation["requested_seed"])
+        self.assertEqual(session.settings.seed, 128)
         self.assertIn(" Synthetic candidate 3.", self.runner.calls[-1][0])
         self.assertNotIn(" First synthetic answer.", self.runner.calls[-1][0])
 
-    def test_ui_seed_is_incremented_and_63_bit_limit_wraps_to_zero(self) -> None:
-        for requested, expected in ((0, 1), (9007199254740993, 9007199254740994), (2**63 - 1, 0)):
+    def test_explicit_seed_is_used_exactly_and_only_next_seed_wraps_to_zero(self) -> None:
+        for requested, expected_next in ((0, 1), (42, 43), (9007199254740993, 9007199254740994), (2**63 - 1, 0)):
             with self.subTest(requested=requested):
                 session = self.completed(17)
-                session.regenerate(GenerationSettings(max_new_tokens=60, seed=requested), self.runner)  # type: ignore[arg-type]
-                self.assertEqual(self.runner.calls[-1][1].seed, expected)
-                self.assertEqual(session.settings.seed, expected)
+                settings = GenerationSettings(max_new_tokens=60, seed=requested)
+                before = copy.deepcopy(session.state(len))
+                calls_before = len(self.runner.calls)
+                preview = session.regeneration_preview(settings, len)
+                self.assertEqual(preview["settings"]["seed"], str(requested))
+                self.assertEqual(session.state(len), before)
+                self.assertEqual(len(self.runner.calls), calls_before)
+                session.regenerate(settings, self.runner)  # type: ignore[arg-type]
+                self.assertEqual(self.runner.calls[-1][1].seed, requested)
+                self.assertEqual(session.settings.seed, expected_next)
                 self.assertEqual(session.last_generation["requested_seed"], str(requested))
-                self.assertEqual(session.last_generation["seed"], str(expected))
-                self.assertEqual(session.state(len)["settings"]["seed"], str(expected))
+                self.assertEqual(session.last_generation["seed"], str(requested))
+                self.assertEqual(session.state(len)["settings"]["seed"], str(expected_next))
 
     def test_preview_uses_saved_prompt_and_upcoming_seed_without_mutation_or_sampling(self) -> None:
         session = self.completed(2**63 - 1)
+        self.assertEqual(session.last_generation["seed"], str(2**63 - 1))
+        self.assertEqual(session.settings.seed, 0)
         before = copy.deepcopy(session.state(len))
         preview = session.regeneration_preview(GenerationSettings(max_new_tokens=40, seed=None), len)
         self.assertEqual(preview["context_text"], session.last_generation["prompt_text"])
@@ -256,7 +272,7 @@ class ChatRegenerateTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     session.regenerate(GenerationSettings(max_new_tokens=50, temperature=0.5, seed=456), self.runner)  # type: ignore[arg-type]
                 self.assertEqual(session.state(len), before)
-                self.assertEqual(self.runner.calls[-1][1].seed, 457)
+                self.assertEqual(self.runner.calls[-1][1].seed, 456)
 
     def test_discarded_response_metadata_and_earlier_candidates_are_deep_copied(self) -> None:
         session = self.completed()
@@ -294,11 +310,34 @@ class ChatRegenerateTests(unittest.TestCase):
         self.assertEqual(restored.context_text(), session.context_text())
         self.assertEqual(restored.rounds[-1].previous_responses, session.rounds[-1].previous_responses)
         self.assertEqual(restored.last_generation, session.last_generation)
+        self.assertEqual(session.settings.seed, 125)
+        self.assertEqual(restored.settings.seed, 125)
         self.runner.text = " A post-import replacement."
         restored.regenerate(GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
         self.assertEqual(restored.last_generation["seed"], "125")
+        self.assertIsNone(restored.last_generation["requested_seed"])
+        self.assertEqual(self.runner.calls[-1][1].seed, 125)
+        self.assertEqual(restored.settings.seed, 126)
         self.assertEqual(self.runner.calls[-1][0], session.last_generation["prompt_text"])
         self.assertEqual(len(restored.rounds[-1].previous_responses), 2)
+
+    def test_imported_seed_is_preserved_as_next_without_rewriting_historical_seeds(self) -> None:
+        session = self.completed()
+        archive = export_chat(session)
+        # An older archive may store the same control seed as its last reply.
+        # Import must preserve that value, rather than infer a newer next seed.
+        archive["settings"]["seed"] = "123"
+        recorded_generation = copy.deepcopy(session.last_generation)
+        restored = import_chat(archive, len)
+        self.assertEqual(restored.settings.seed, 123)
+        self.assertEqual(restored.last_generation, recorded_generation)
+        self.runner.text = " A replacement after importing the stored next seed."
+        restored.regenerate(GenerationSettings(max_new_tokens=60), self.runner)  # type: ignore[arg-type]
+        self.assertEqual(self.runner.calls[-1][1].seed, 123)
+        self.assertEqual(restored.last_generation["seed"], "123")
+        self.assertIsNone(restored.last_generation["requested_seed"])
+        self.assertEqual(restored.settings.seed, 124)
+        self.assertEqual(restored.rounds[-1].previous_responses[0]["generation"], recorded_generation)
 
 
 class ChatRegenerateHttpTests(unittest.TestCase):
@@ -347,10 +386,12 @@ class ChatRegenerateHttpTests(unittest.TestCase):
     def test_http_preview_then_regenerate_wraps_seed_and_keeps_a_single_turn(self) -> None:
         first = self.complete()
         self.assertTrue(first["can_regenerate"])
+        self.assertEqual(first["settings"]["seed"], "0")
+        self.assertEqual(first["last_generation"]["seed"], str(2**63 - 1))
         request = {"session_id": self.session.session_id, "settings": {"max_new_tokens": 60, "seed": str(2**63 - 1)}}
         status, preview = self.request("/api/regenerate-preview", request)
         self.assertEqual(status, 200)
-        self.assertEqual(preview["settings"]["seed"], "0")
+        self.assertEqual(preview["settings"]["seed"], str(2**63 - 1))
         self.assertEqual(preview["context_text"], first["last_generation"]["prompt_text"])
         self.assertEqual(self.state(), first)
         self.assertEqual(len(self.runner.calls), 1)
@@ -358,7 +399,8 @@ class ChatRegenerateHttpTests(unittest.TestCase):
         status, state = self.request("/api/regenerate", request)
         self.assertEqual(status, 200)
         self.assertEqual(state["settings"]["seed"], "0")
-        self.assertEqual(state["last_generation"]["seed"], "0")
+        self.assertEqual(self.runner.calls[-1][1].seed, 2**63 - 1)
+        self.assertEqual(state["last_generation"]["seed"], str(2**63 - 1))
         self.assertEqual(state["last_generation"]["requested_seed"], str(2**63 - 1))
         self.assertEqual(len(state["turns"]), 1)
         self.assertEqual(state["turns"][-1]["human"], first["turns"][-1]["human"])
@@ -390,6 +432,7 @@ class ChatRegenerateHttpTests(unittest.TestCase):
         status, error = self.request("/api/regenerate", body)
         self.assertEqual(status, 500)
         self.assertIn("preserved", error["error"])
+        self.assertEqual(self.runner.calls[-1][1].seed, 456)
         self.assertEqual(self.state(), first)
         with self.app.lock:
             for path in ("/api/regenerate-preview", "/api/regenerate"):
@@ -404,6 +447,9 @@ class ChatRegenerateHttpTests(unittest.TestCase):
         self.runner.text = " Synthetic HTTP candidate."
         status, regenerated = self.request("/api/regenerate", {"session_id": self.session.session_id, "settings": {"max_new_tokens": 60}})
         self.assertEqual(status, 200)
+        self.assertEqual(regenerated["last_generation"]["seed"], "0")
+        self.assertIsNone(regenerated["last_generation"]["requested_seed"])
+        self.assertEqual(regenerated["settings"]["seed"], "1")
         status, archive = self.request("/api/export", {"session_id": self.session.session_id})
         self.assertEqual(status, 200)
         status, restored = self.request("/api/import", {"chat": archive, "previous_session_id": self.session.session_id})

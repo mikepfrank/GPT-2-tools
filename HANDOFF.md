@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-03**
+Last updated: **2026-10-04 UTC**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -17,8 +17,9 @@ starting from `b48ff08`. Its local worktree is `.worktrees/gpt2-chat`; the
 original `main` checkout and shared editable WSL installation remain intact.
 The project owner has tested basic chat, speaker colors, seed recording,
 import/export, and last-reply regeneration. Context omission hints are the
-latest increment; streaming, participant renaming, and in-context commands
-remain later work.
+latest increment on that branch. Streaming is deployed from the separate
+streaming worktree below; participant renaming and in-context commands remain
+later work.
 
 - Public repository: <https://github.com/mikepfrank/GPT-2-tools>
 - Primary branch: `main`
@@ -130,6 +131,25 @@ do not predict GPT-2 inference throughput.
 
 ## Streaming previews
 
+### Next-generation seeds (local preview)
+
+The owner requested automatic seed advancement after every generation, with
+local testing before public deployment. The current development policy treats
+the seed control and archived settings as the **next generation's seed**.
+Both a new reply and regeneration use the selected/stored seed unchanged,
+then advance it by one only after successful inference and validation,
+wrapping `9223372036854775807` to zero. Actual/requested seeds in historical
+generation records are unchanged. A manually entered seed is honored; a
+blank field falls back to the stored next seed. Preview, failure, reconnect,
+and repeated result GETs never consume a seed.
+
+Imports preserve saved controls, including older fixed-seed archives, and
+never rewrite historical metadata. No archive schema or RNG/sampling change
+is needed. The public service remains at its frozen `5389a30` build with the
+earlier seed policy until the owner accepts the local test and authorizes
+deployment. Local validation and the current preview PID are recorded below
+and in `VERIFICATION.md`.
+
 Streaming work starts from public-service tip `e5971db` in the isolated
 `.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose
 a local laptop preview first, accepted the local and hosted previews, and
@@ -150,16 +170,18 @@ The in-app browser displayed provisional tokens and successfully resumed a
 pending regeneration after reload. Exact evidence is in `VERIFICATION.md`;
 private prompts, token arrays, archives, and screenshots remain ignored.
 
-The durable preview currently runs as WSL PID 341 at **http://localhost:8891/**,
-bound only to `127.0.0.1:8891`. Its private log and PID file are under
-`outputs/deploy/streaming-preview.*`. Inspect the saved PID command line before
+The seed-policy preview now runs as WSL PID 1355 at **http://localhost:8891/**,
+bound only to `127.0.0.1:8891`. It replaced the verified idle parity-preview
+PID 341; the earlier harness/evidence remains historical. The active private
+log is `outputs/deploy/seed-preview-20261004.log`, and its PID file is
+`outputs/deploy/seed-preview.pid`. Inspect the saved PID command line before
 stopping it; send SIGTERM only while its health reports no accepted work.
 After it stops, `./streaming-preview.ps1` launches a foreground preview; Ctrl+C
 stops that foreground process. Do not launch a second resident model.
 [`docs/STREAMING.md`](docs/STREAMING.md) gives startup and implementation details.
 Use the shared WSL environment through `PYTHONPATH`, recheck capacity before
 loading. The public service and its Caddy configuration were not touched during
-the laptop streaming implementation or validation.
+the laptop streaming or seed-policy implementation and validation.
 
 The hosted preview at `test.gpt2-chat.com` passed real incremental-display,
 same-job reload, canonical/archive/regeneration and independent safety checks;

@@ -41,6 +41,17 @@ function state(context = "Context: test", reply = false) {
   };
 }
 
+function seedState(nextSeed, usedSeed = null, context = "Context: seed contract") {
+  const value = state(context, usedSeed !== null);
+  value.settings.seed = nextSeed;
+  value.chat.settings.seed = nextSeed;
+  if (usedSeed !== null) {
+    value.last_generation.seed = usedSeed;
+    value.last_generation.requested_seed = usedSeed;
+  }
+  return value;
+}
+
 function storage(values = new Map()) {
   return {getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), values};
 }
@@ -1054,4 +1065,276 @@ test("terminal result timeout includes receiving the JSON body and retries only 
     assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
     assert.equal(b.nodes.get("context").textContent, "complete body retrieved");
   } finally { b.stop(); }
+});
+
+test("completed messages and regeneration consume the displayed next seed and accept the server successor", async () => {
+  const completed = [seedState("43", "42", "first reply"),
+    seedState("44", "43", "second reply"), seedState("45", "44", "replacement")];
+  const expected = ["42", "43", "44"];
+  let submissions = 0;
+  const b = browser({respond: (url, body) => {
+    if (url === "/api/health") return {limits: {max_reply_tokens: 256}};
+    if (url === "/api/new") return seedState("42");
+    if (url === "/api/preview" || url === "/api/regenerate-preview") {
+      assert.equal(body.settings.seed, expected[submissions]);
+      return seedState(expected[submissions], null, "prepared input");
+    }
+    if (url === "/api/message" || url === "/api/regenerate") {
+      assert.equal(body.settings.seed, expected[submissions]);
+      assert.equal(body.chat.settings.seed, expected[submissions]);
+      return {job_id: "seed-" + (++submissions), status: "queued"};
+    }
+    const job = /^\/api\/jobs\/seed-(\d)$/.exec(url);
+    if (job) return {status: "complete", state: completed[Number(job[1]) - 1]};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    assert.equal(b.nodes.get("seed").value, "42");
+    for (const [index, message] of ["first", "second"].entries()) {
+      b.nodes.get("message").value = message;
+      await b.run("generate()");
+      assert.equal(b.nodes.get("seed").value, completed[index].settings.seed);
+      assert.equal(b.run("committed.last_generation.seed"), expected[index]);
+      assert.match(b.nodes.get("status").textContent, new RegExp("seed " + expected[index] + "$"));
+      assert.deepEqual(JSON.parse(b.run("JSON.stringify(committed.chat)")), completed[index].chat);
+    }
+    b.nodes.get("message").value = "keep this draft";
+    await b.run("generate(true)");
+    assert.equal(submissions, 3);
+    assert.equal(b.nodes.get("seed").value, "45");
+    assert.equal(b.run("committed.last_generation.seed"), "44");
+    assert.equal(b.nodes.get("message").value, "keep this draft");
+    assert.equal(b.run("exportArchive().settings.seed"), "45");
+    assert.equal(b.run("exportArchive().blocks[1].generation.seed"), "44");
+    assert.equal(b.calls.filter((call) => call.url === "/api/regenerate").length, 1);
+    assert.equal([...b.records.values()].at(-1).controls.seed, "45");
+  } finally { b.stop(); }
+});
+
+test("seed maximum wraps through server state, and manual message/regeneration seeds and blank fallback are honored", async () => {
+  const expected = ["9223372036854775807", "42", null, "7"];
+  const completed = [seedState("0", "9223372036854775807"), seedState("43", "42"),
+    seedState("44", "43"), seedState("8", "7")];
+  let submissions = 0;
+  const b = browser({respond: (url, body) => {
+    if (url === "/api/health") return {limits: {max_reply_tokens: 256}};
+    if (url === "/api/new") return seedState("9223372036854775807");
+    if (url === "/api/preview" || url === "/api/regenerate-preview") {
+      assert.equal(body.settings.seed, expected[submissions]);
+      return seedState(completed[submissions].last_generation.seed, null, "prepared");
+    }
+    if (url === "/api/message" || url === "/api/regenerate") {
+      assert.equal(body.settings.seed, expected[submissions]);
+      if (body.settings.seed === null) assert.equal(body.chat.settings.seed, "43");
+      return {job_id: "edited-" + (++submissions), status: "running"};
+    }
+    const job = /^\/api\/jobs\/edited-(\d)$/.exec(url);
+    if (job) return {status: "complete", state: completed[Number(job[1]) - 1]};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    for (const [index, input] of [undefined, "00042", "", "0007"].entries()) {
+      if (input !== undefined) b.nodes.get("seed").value = input;
+      b.nodes.get("message").value = "draft";
+      await b.run(index === 3 ? "generate(true)" : "generate()");
+      assert.equal(b.nodes.get("seed").value, completed[index].settings.seed);
+      assert.equal(b.run("committed.last_generation.seed"), completed[index].last_generation.seed);
+    }
+    assert.equal(submissions, 4);
+    assert.equal(b.nodes.get("seed").value, "8");
+  } finally { b.stop(); }
+});
+
+test("next seed persists across offline reload and export/import without advancing historical generations", async () => {
+  const final = seedState("43", "42", "durable reply");
+  const b = browser({respond: (url) => {
+    if (url === "/api/health") return {limits: {max_reply_tokens: 256}};
+    if (url === "/api/new" || url === "/api/preview") return seedState("42");
+    if (url === "/api/message") return {job_id: "durable-seed", status: "running"};
+    if (url === "/api/jobs/durable-seed") return {status: "complete", state: final};
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+  } finally { b.stop(); }
+  const offline = browser({records: b.records, session: b.session, local: b.local,
+    respond: () => new Error("offline")});
+  let exported;
+  try {
+    await offline.boot;
+    assert.equal(offline.nodes.get("seed").value, "43");
+    exported = JSON.parse(offline.run("JSON.stringify(exportArchive())"));
+    assert.equal(exported.settings.seed, "43");
+    assert.equal(exported.blocks[1].generation.seed, "42");
+    assert.deepEqual(exported.blocks, final.chat.blocks);
+    await offline.run("exportChat()");
+    assert.equal(offline.nodes.get("seed").value, "43");
+    assert.equal([...offline.records.values()].at(-1).state.chat.settings.seed, "43");
+  } finally { offline.stop(); }
+  const imported = browser({records: offline.records, session: offline.session, local: offline.local,
+    respond: (url, body) => {
+      if (url === "/api/health") return {limits: {max_reply_tokens: 256}};
+      if (url === "/api/import") return {...structuredClone(final), chat: structuredClone(body.chat)};
+      throw new Error("Import/reload must not submit a generation");
+    }});
+  try {
+    await imported.boot;
+    assert.equal(imported.nodes.get("seed").value, "43");
+    imported.context.file = {size: 100, name: "next-seed.json", text: async () => JSON.stringify(exported)};
+    await imported.run("importChat(file)");
+    assert.equal(imported.nodes.get("seed").value, "43");
+    assert.equal(imported.run("committed.last_generation.seed"), "42");
+    assert.deepEqual(JSON.parse(imported.run("JSON.stringify(committed.chat.blocks)")), final.chat.blocks);
+    assert.equal(imported.calls.filter((call) => call.url === "/api/message" || call.url === "/api/regenerate").length, 0);
+  } finally { imported.stop(); }
+});
+
+test("import preserves an older stored seed as next even when it equals the last generation seed", async () => {
+  const old = seedState("9223372036854775807", "9223372036854775807", "older archive");
+  const b = browser({respond: (url) => url === "/api/health" ? {limits: {max_reply_tokens: 256}} :
+    url === "/api/new" ? seedState("42") : url === "/api/import" ? old : new Error("Unexpected generation")});
+  try {
+    await b.boot;
+    b.context.file = {size: 100, name: "older.json", text: async () => JSON.stringify(old.chat)};
+    await b.run("importChat(file)");
+    assert.equal(b.nodes.get("seed").value, "9223372036854775807");
+    assert.equal(b.run("exportArchive().settings.seed"), "9223372036854775807");
+    assert.deepEqual(JSON.parse(b.run("JSON.stringify(committed.chat.blocks)")), old.chat.blocks);
+  } finally { b.stop(); }
+});
+
+test("rejected, failed and uncertain generation requests preserve the selected next seed and stored archive seed", async () => {
+  for (const failure of ["rejected", "failed", "network", "server"]) {
+    const original = seedState("43", "42", "committed reply");
+    const b = browser({respond: (url) => {
+      if (url === "/api/health") return {limits: {max_reply_tokens: 256}};
+      if (url === "/api/new") return original;
+      if (url === "/api/preview") return seedState("43", null, "pending input");
+      if (url === "/api/message") {
+        if (failure === "rejected") return {httpStatus: 503, payload: {error: "Queue full", accepted: false}};
+        if (failure === "network") return new Error("lost acknowledgement");
+        if (failure === "server") return {httpStatus: 500, payload: {error: "unknown outcome"}};
+        return {job_id: "failed-seed", status: "running"};
+      }
+      if (url === "/api/jobs/failed-seed") return {status: "failed", error: "deadline"};
+      throw new Error("Unexpected " + url);
+    }});
+    try {
+      await b.boot;
+      b.nodes.get("seed").value = "99";
+      b.nodes.get("message").value = "keep my draft";
+      await b.run("generate()");
+      assert.equal(b.nodes.get("seed").value, "99", failure);
+      assert.equal(b.run("committed.settings.seed"), "43", failure);
+      assert.equal(b.run("committed.chat.settings.seed"), "43", failure);
+      assert.equal(b.run("committed.last_generation.seed"), "42", failure);
+      assert.equal(b.nodes.get("message").value, "keep my draft", failure);
+      assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1, failure);
+      assert.deepEqual(JSON.parse(b.run("JSON.stringify(committed.chat)")), original.chat, failure);
+      if (["network", "server"].includes(failure)) {
+        assert.equal(b.run("pending.job_id"), null);
+        const resumed = browser({records: b.records, session: b.session, local: b.local,
+          respond: (url) => url === "/api/health" ? {limits: {max_reply_tokens: 256}} : new Error("Must not retry")});
+        try {
+          await resumed.boot;
+          assert.equal(resumed.nodes.get("seed").value, "99");
+          assert.equal(resumed.run("committed.chat.settings.seed"), "43");
+          assert.equal(resumed.run("busy"), true);
+          assert.equal(resumed.calls.filter((call) => call.method === "POST").length, 0);
+          resumed.nodes.get("dismiss-pending").listeners.click[0]();
+          assert.equal(resumed.nodes.get("seed").value, "99");
+          assert.equal(resumed.run("pending"), null);
+        } finally { resumed.stop(); }
+      } else {
+        assert.equal(b.run("pending"), null);
+        assert.equal(b.run("busy"), false);
+      }
+    } finally { b.stop(); }
+  }
+});
+
+test("stream reconnect and repeated terminal retrieval advance next seed only through one canonical commit", async () => {
+  const original = seedState("42");
+  const final = seedState("43", "42", "final reply");
+  let streams = 0;
+  let results = 0;
+  const b = browser({respond: (url, body, params) => {
+    if (url === "/api/health") return {capabilities: {streaming: true}};
+    if (url === "/api/new") return original;
+    if (url === "/api/preview") return seedState("42", null, "prepared");
+    if (url === "/api/message") return {job_id: "next-seed-stream", status: "running"};
+    if (url === "/api/jobs/next-seed-stream/events") {
+      assert.equal(b.nodes.get("seed").value, "42");
+      assert.equal(b.run("committed.settings.seed"), "42");
+      if (++streams === 1) return streamed([progress(2, " p", 1)]);
+      assert.equal(params.headers["Last-Event-ID"], "2");
+      return streamed([progress(2, " p", 1), progress(3, " partial", 2), wire("complete", 4)]);
+    }
+    if (url === "/api/jobs/next-seed-stream") {
+      assert.equal(b.nodes.get("seed").value, "42");
+      assert.equal(b.run("committed.chat.settings.seed"), "42");
+      if (++results === 1) return {status: "running", progress: {
+        version: 1, seq: 2, status: "running", position: 0, generated_tokens: 1, reply_text: " p"}};
+      if (results === 2) return new Error("temporary final GET failure");
+      return {status: "complete", state: final};
+    }
+    throw new Error("Unexpected " + url);
+  }});
+  try {
+    await b.boot;
+    b.nodes.get("message").value = "Hello";
+    await b.run("generate()");
+    assert.equal(streams, 2);
+    assert.equal(results, 3);
+    assert.equal(b.calls.filter((call) => call.url === "/api/message").length, 1);
+    assert.equal(b.nodes.get("seed").value, "43");
+    assert.equal(b.run("committed.last_generation.seed"), "42");
+    b.context.completedAgain = {status: "complete", state: final};
+    await b.run("finishJob(completedAgain, 'next-seed-stream')");
+    assert.equal(b.nodes.get("seed").value, "43");
+    assert.equal([...b.records.values()].at(-1).state.chat.settings.seed, "43");
+  } finally { b.stop(); }
+});
+
+test("reload of a pending job keeps its used seed until completion and reload of completion keeps the successor", async () => {
+  const original = seedState("42");
+  const final = seedState("43", "42", "recovered reply");
+  const prepared = seedState("42", null, "prepared input");
+  const records = new Map([["saved", snapshot(original, {
+    controls: {temperature: "0.8", seed: "42", replyLimit: "32", exampleRounds: "0"},
+    pending: {job_id: "recover-next-seed", regenerated: false, message: "submitted draft",
+      display: displayFor(prepared), submitted_settings: {temperature: 0.8, max_new_tokens: 32, seed: "42"}}
+  })]]);
+  let release;
+  const terminal = new Promise((resolve) => { release = resolve; });
+  const b = browser({records, session: storage(new Map([["gpt2-public-chat-tab-v1", "saved"]])),
+    respond: (url) => {
+      if (url === "/api/health") return {capabilities: {streaming: true}};
+      if (url === "/api/jobs/recover-next-seed/events") return streamed([progress(2, " partial", 1), () => terminal]);
+      if (url === "/api/jobs/recover-next-seed") return {status: "complete", state: final};
+      throw new Error("No generation POST on recovery");
+    }});
+  try {
+    await until(() => b.run("provisionalText") === " partial");
+    assert.equal(b.nodes.get("seed").value, "42");
+    assert.equal(b.run("committed.chat.settings.seed"), "42");
+    release(wire("complete", 3));
+    await b.boot;
+    assert.equal(b.nodes.get("seed").value, "43");
+    assert.equal(b.run("committed.last_generation.seed"), "42");
+    assert.equal(b.calls.filter((call) => call.method === "POST").length, 0);
+  } finally { b.stop(); }
+  const reloaded = browser({records: b.records, session: b.session, local: b.local,
+    respond: (url) => url === "/api/health" ? {capabilities: {streaming: true}} :
+      url === "/api/import" ? final : new Error("No completed-job resubmission")});
+  try {
+    await reloaded.boot;
+    assert.equal(reloaded.nodes.get("seed").value, "43");
+    assert.equal(reloaded.run("committed.last_generation.seed"), "42");
+    assert.equal(reloaded.calls.filter((call) => call.url === "/api/message" || call.url === "/api/regenerate").length, 0);
+  } finally { reloaded.stop(); }
 });

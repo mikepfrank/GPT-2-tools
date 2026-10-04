@@ -120,8 +120,16 @@ comes from the browser's local calendar when starting the chat.
 
 Temperature, optional seed, and maximum reply length apply to each next
 message. Leaving the seed blank before **New chat** chooses a random seed once
-and shows it in the field. Replies reuse that seed unless you change it;
-clearing the field during a chat continues to use its stored seed. The default reply
+and shows it in the field. The field is the seed for the **next generation**.
+After each successful reply, including regeneration, it advances by one;
+for example, replies use seeds 42, 43, 44 while the field then shows 45.
+The largest supported seed, `9223372036854775807`, wraps to zero. You can
+enter a different seed to use it for the next generation; clearing the field
+uses the stored next seed. Previewing, reconnecting, exporting, and failed
+generations do not advance it. Temperature zero still advances the field,
+although greedy decoding ignores seeds. This policy is currently available
+in the local development preview; public deployment awaits owner testing.
+The default reply
 allowance is 120 tokens, leaving up to 904 input
 tokens within GPT-2's 1,024-token window. The fixed header is preserved while
 the oldest complete conversation rounds roll out, starting with the examples.
@@ -140,9 +148,9 @@ unsent input and existing history.
 
 Click **Regenerate last reply** to replace the latest model reply using its
 exact original input prompt. The app increments the seed shown in the control
-by one first; a blank control uses the stored active seed. The new seed appears
-after a successful reply and becomes the active seed for subsequent messages.
-The largest supported seed, `9223372036854775807`, wraps to zero. Regeneration
+by one after a successful replacement, just as it does after a new message.
+The replacement uses the next seed currently shown, or the stored next seed
+if the field is blank. Regeneration
 uses the current temperature and reply limit, and requires temperature above
 zero because greedy decoding ignores the seed. A different seed can still
 produce the same text. If an increased reply allowance cannot fit alongside
@@ -171,6 +179,9 @@ decimal strings so full 63-bit values survive browser JSON handling. Missing
 metadata from older conversations remains explicitly unknown. When an older
 archive has no active seed, import chooses one for future replies; it does not
 recover or change the historical seeds.
+Otherwise import preserves the saved seed as the next generation's seed,
+including older fixed-seed archives. Historical generation records retain
+their actual seeds; subsequent successful generations advance the saved seed.
 
 Regenerated replies retain earlier candidates in the model block's
 `previous_responses` list, each with its text and generation metadata. Only

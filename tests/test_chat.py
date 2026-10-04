@@ -147,6 +147,8 @@ class ChatSessionTests(unittest.TestCase):
         session.reply(first_message, settings, self.runner)  # type: ignore[arg-type]
         first_prompt = session.header + HUMAN_MARKER + " " + first_normalized + MODEL_MARKER
         self.assertEqual(self.runner.calls[0], (first_prompt, settings, MESSAGE_DELIMITER_PATTERN))
+        self.assertEqual(session.last_generation["seed"], "123")
+        self.assertEqual(session.settings.seed, 124)
         self.assertEqual(MESSAGE_DELIMITER_PATTERN, r"\n\n[^\s>]+>")
         first_round = Round(first_normalized, self.runner.text)
         self.assertEqual(session.context_text(), session.header + first_round.text())
@@ -155,6 +157,9 @@ class ChatSessionTests(unittest.TestCase):
         session.reply("Next question?", settings, self.runner)  # type: ignore[arg-type]
         next_prompt = session.header + first_round.text() + HUMAN_MARKER + " Next question?" + MODEL_MARKER
         self.assertEqual(self.runner.calls[1][0], next_prompt)
+        self.assertEqual(self.runner.calls[1][1].seed, 123)
+        self.assertEqual(session.last_generation["requested_seed"], "123")
+        self.assertEqual(session.settings.seed, 124)
         self.assertEqual(session.last_generation["prompt_text"], next_prompt)
         self.assertTrue(session.context_text().endswith(self.runner.text))
         self.assertEqual(session.state(len)["context_text"], session.context_text())
@@ -294,6 +299,58 @@ class ChatSessionTests(unittest.TestCase):
         session.reply("question", settings, self.runner)  # type: ignore[arg-type]
         self.assertEqual(session.last_generation["seed"], seed)
         self.assertEqual(self.runner.calls[0][1].seed, 2**63 - 1)
+        self.assertEqual(session.settings.seed, 0)
+        self.assertEqual(session.state(len)["settings"]["seed"], "0")
+
+    def test_message_regenerate_message_consumes_saved_next_seed_once_per_success(self) -> None:
+        session = self.short_session()
+        session.settings = GenerationSettings(max_new_tokens=32, seed=10)
+        automatic = GenerationSettings(max_new_tokens=32)
+        session.reply("First question?", automatic, self.runner)
+        original_prompt = self.runner.calls[-1][0]
+        first_generation = copy.deepcopy(session.last_generation)
+        self.assertEqual(session.last_generation["seed"], "10")
+        self.assertIsNone(session.last_generation["requested_seed"])
+        self.assertEqual(session.settings.seed, 11)
+        session.regenerate(automatic, self.runner)
+        self.assertEqual(self.runner.calls[-1][0], original_prompt)
+        self.assertEqual(session.last_generation["seed"], "11")
+        self.assertEqual(session.settings.seed, 12)
+        self.assertEqual(session.rounds[-1].previous_responses[0]["generation"], first_generation)
+        session.reply("Second question?", automatic, self.runner)
+        self.assertEqual(session.last_generation["seed"], "12")
+        self.assertEqual(session.settings.seed, 13)
+        self.assertEqual([call[1].seed for call in self.runner.calls], [10, 11, 12])
+        self.assertEqual([item.generation["seed"] for item in session.transcript], ["11", "12"])
+
+    def test_manual_message_seed_override_controls_actual_and_next_even_for_greedy(self) -> None:
+        for requested in (0, 2**53 + 1, 2**63 - 1):
+            with self.subTest(requested=requested):
+                session = self.short_session()
+                session.settings = GenerationSettings(max_new_tokens=32, seed=50)
+                settings = GenerationSettings(max_new_tokens=32, temperature=0, seed=requested)
+                session.reply("Question?", settings, self.runner)
+                self.assertEqual(self.runner.calls[-1][1].seed, requested)
+                self.assertEqual(session.last_generation["seed"], str(requested))
+                self.assertEqual(session.last_generation["requested_seed"], str(requested))
+                self.assertEqual(session.settings.seed, (requested + 1) % (2**63))
+                self.assertEqual(session.settings.temperature, 0)
+
+    def test_repeated_preview_and_rejected_message_do_not_consume_next_seed(self) -> None:
+        session = self.short_session()
+        session.settings = GenerationSettings(max_new_tokens=32, seed=10)
+        automatic = GenerationSettings(max_new_tokens=32)
+        before = copy.deepcopy(session.state(len))
+        for _ in range(3):
+            session.preview("Question?", automatic, len)
+            self.assertEqual(session.state(len), before)
+        with self.assertRaisesRegex(ValueError, "Shorten the message"):
+            session.reply("x" * MODEL_CONTEXT_TOKENS, automatic, self.runner)
+        self.assertEqual(session.state(len), before)
+        self.assertFalse(self.runner.calls)
+        session.reply("Question?", automatic, self.runner)
+        self.assertEqual(self.runner.calls[-1][1].seed, 10)
+        self.assertEqual(session.settings.seed, 11)
 
     def test_settings_reject_invalid_types_ranges_and_nonfinite_values(self) -> None:
         invalid = (
@@ -381,6 +438,7 @@ class ChatHttpTests(unittest.TestCase):
         self.assertEqual(state["last_generation"]["prompt_text"], expected_prompt)
         self.assertEqual(state["context_text"], expected_prompt + self.runner.text)
         self.assertEqual(state["last_generation"]["seed"], seed)
+        self.assertEqual(state["settings"]["seed"], "0")
         self.assertEqual(state["turns"][-1]["human"], message)
         status, fetched = self.request("GET", "/api/state?session_id=" + initial["session_id"])
         self.assertEqual(status, 200)

@@ -4,7 +4,7 @@ import copy
 import json
 import threading
 import unittest
-from http.client import HTTPConnection
+from http.client import HTTPConnection, RemoteDisconnected
 from unittest import mock
 
 from gpt2_local.chat import (
@@ -209,7 +209,7 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         self.assertEqual(self.state(session), initial)
         self.assertEqual(self.runner.calls, [])
 
-    def test_blank_initial_seed_is_chosen_once_and_reused_by_replies_and_exports(self) -> None:
+    def test_blank_initial_seed_is_chosen_once_and_advances_after_replies_with_exports_preserving_next(self) -> None:
         for temperature in (0, 0.8):
             with self.subTest(temperature=temperature):
                 seed = 2**63 - 1
@@ -222,23 +222,23 @@ class ChatTransferIntegrationTests(unittest.TestCase):
                     self.assertEqual(initial["turns"], [])
                     initial_archive = self.export(initial["session_id"], controls)
                     self.assertEqual(initial_archive["settings"]["seed"], str(seed))
-                    for message in ("First synthetic question?", "Second synthetic question?"):
+                    for message, used in zip(("First synthetic question?", "Second synthetic question?"), (seed, 0)):
                         status, state = self.request("POST", "/api/message", {"session_id": initial["session_id"], "message": message, "settings": controls})
                         self.assertEqual(status, 200)
                         prompt, effective, stop_pattern = self.runner.calls[-1]
-                        self.assertEqual(effective.seed, seed)
+                        self.assertEqual(effective.seed, used)
                         self.assertEqual(effective.temperature, temperature)
                         self.assertEqual(stop_pattern, MESSAGE_DELIMITER_PATTERN)
                         generation = state["last_generation"]
-                        self.assertEqual(generation["seed"], str(seed))
+                        self.assertEqual(generation["seed"], str(used))
                         self.assertIsNone(generation["requested_seed"])
-                        self.assertEqual(state["settings"]["seed"], str(seed))
+                        self.assertEqual(state["settings"]["seed"], str((used + 1) % (2**63)))
                         self.assertEqual(generation["prompt_text"], prompt)
                         self.assertEqual(generation["output_token_ids"], [42])
                         self.assertEqual(state["turns"][-1]["generation"], generation)
                         archive = self.export(initial["session_id"], controls)
                         self.assertEqual(archive["blocks"][-1]["generation"], generation)
-                        self.assertEqual(archive["settings"]["seed"], str(seed))
+                        self.assertEqual(archive["settings"]["seed"], str((used + 1) % (2**63)))
                     choose.assert_called_once_with(2**63)
 
     def test_each_new_chat_with_blank_seed_gets_its_own_recorded_seed(self) -> None:
@@ -271,6 +271,7 @@ class ChatTransferIntegrationTests(unittest.TestCase):
             status, resumed = self.request("POST", "/api/message", {"session_id": imported["session_id"], "message": "A new synthetic question?", "settings": {"temperature": 0.7, "max_new_tokens": 80, "seed": None}})
             self.assertEqual(status, 200)
             self.assertEqual(resumed["last_generation"]["seed"], "789")
+            self.assertEqual(resumed["settings"]["seed"], "790")
             self.assertTrue(all(item["generation"] is None for item in resumed["turns"][:-1]))
             choose.assert_called_once_with(2**63)
         self.assertEqual(archive, original)
@@ -279,14 +280,15 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         session = self.fixture()
         session.settings = GenerationSettings(max_new_tokens=80, temperature=0.7)
         with mock.patch("gpt2_local.chat.secrets.randbelow", return_value=456) as choose:
-            for message in ("First synthetic question?", "Second synthetic question?"):
+            for message, used in zip(("First synthetic question?", "Second synthetic question?"), (456, 457)):
                 status, state = self.request("POST", "/api/message", {"session_id": session.session_id, "message": message, "settings": {"max_new_tokens": 40, "seed": None}})
                 self.assertEqual(status, 200)
-                self.assertEqual(state["settings"]["seed"], "456")
-                self.assertEqual(state["last_generation"]["seed"], "456")
+                self.assertEqual(state["settings"]["seed"], str(used + 1))
+                self.assertEqual(state["last_generation"]["seed"], str(used))
+                self.assertEqual(self.runner.calls[-1][1].seed, used)
             choose.assert_called_once_with(2**63)
 
-    def test_explicit_63_bit_replay_seed_survives_export_import_and_next_controls(self) -> None:
+    def test_explicit_63_bit_seed_keeps_provenance_and_wraps_next_controls_across_import(self) -> None:
         seed = str(2**63 - 1)
         controls = {"temperature": 0.8, "max_new_tokens": 40, "seed": seed}
         with mock.patch("gpt2_local.chat.secrets.randbelow", side_effect=AssertionError("Explicit seeds must not be replaced")):
@@ -294,18 +296,22 @@ class ChatTransferIntegrationTests(unittest.TestCase):
             self.assertEqual(session.settings.seed, 0)
             status, generated = self.request("POST", "/api/message", {"session_id": session.session_id, "message": "First synthetic question?", "settings": controls})
             self.assertEqual(status, 200)
+            self.assertEqual(generated["last_generation"]["seed"], seed)
+            self.assertEqual(generated["settings"]["seed"], "0")
             archive = self.export(session.session_id)
             status, imported = self.request("POST", "/api/import", {"chat": archive, "previous_session_id": session.session_id})
             self.assertEqual(status, 200)
-            self.assertEqual(imported["settings"]["seed"], seed)
+            self.assertEqual(imported["settings"]["seed"], "0")
             self.assertEqual(imported["last_generation"], generated["last_generation"])
             self.assertEqual(len(self.runner.calls), 1)
             replay_controls = {key: imported["settings"][key] for key in ("temperature", "max_new_tokens", "seed")}
             status, resumed = self.request("POST", "/api/message", {"session_id": imported["session_id"], "message": "Second synthetic question?", "settings": replay_controls})
         self.assertEqual(status, 200)
-        self.assertEqual(self.runner.calls[-1][1].seed, 2**63 - 1)
-        self.assertEqual(resumed["last_generation"]["requested_seed"], seed)
-        self.assertEqual(resumed["last_generation"]["seed"], seed)
+        self.assertEqual(self.runner.calls[-1][1].seed, 0)
+        self.assertEqual(resumed["last_generation"]["requested_seed"], "0")
+        self.assertEqual(resumed["last_generation"]["seed"], "0")
+        self.assertEqual(resumed["settings"]["seed"], "1")
+        self.assertEqual(resumed["turns"][-2]["generation"], generated["last_generation"])
         self.assert_exact_blocks(resumed)
 
     def test_followup_export_during_response_write_uses_released_lock_and_stable_snapshot(self) -> None:
@@ -350,10 +356,45 @@ class ChatTransferIntegrationTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(replies[0][0], 200)
         # A concurrent control update cannot alter the already serialized reply.
-        self.assertEqual(replies[0][1]["settings"]["seed"], seed)
+        self.assertEqual(replies[0][1]["settings"]["seed"], "0")
         self.assertEqual(replies[0][1]["settings"]["max_new_tokens"], 40)
         self.assertEqual(replies[0][1]["last_generation"]["seed"], seed)
         self.assertEqual(session.settings.seed, 7)
+
+    def test_failed_response_write_preserves_committed_next_seed_for_get_recovery(self) -> None:
+        session = self.fixture()
+        original_turns = len(session.transcript)
+        original_send = ChatHandler._send
+        write_failed = threading.Event()
+
+        def broken_send(handler: ChatHandler, status: int, content: bytes, content_type: str) -> None:
+            if handler.path == "/api/message":
+                write_failed.set()
+                raise BrokenPipeError("synthetic disconnected browser")
+            original_send(handler, status, content, content_type)
+
+        with mock.patch.object(ChatHandler, "_send", broken_send), mock.patch.object(self.server, "handle_error"):
+            with self.assertRaises(RemoteDisconnected):
+                self.request("POST", "/api/message", {
+                    "session_id": session.session_id, "message": "Committed synthetic question?",
+                    "settings": {"max_new_tokens": 40, "seed": str(2**63 - 1)},
+                })
+        self.assertTrue(write_failed.is_set())
+        recovered = self.state(session)
+        self.assertEqual(recovered["settings"]["seed"], "0")
+        self.assertEqual(recovered["last_generation"]["seed"], str(2**63 - 1))
+        self.assertEqual(len(recovered["turns"]), original_turns + 1)
+        for _ in range(3):
+            self.assertEqual(self.state(session), recovered)
+        self.assertEqual(len(self.runner.calls), 1)
+        status, next_state = self.request("POST", "/api/message", {
+            "session_id": session.session_id, "message": "Next synthetic question?",
+            "settings": {"max_new_tokens": 40, "seed": None},
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(self.runner.calls[-1][1].seed, 0)
+        self.assertEqual(next_state["last_generation"]["seed"], "0")
+        self.assertEqual(next_state["settings"]["seed"], "1")
 
     def test_generation_failure_does_not_change_saved_controls_or_historical_metadata(self) -> None:
         session = self.fixture()
