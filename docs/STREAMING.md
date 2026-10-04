@@ -1,0 +1,378 @@
+# Streaming replies: design and preview plan
+
+Status: **design only, October 3, 2026**. Streaming is not implemented or ready
+to try yet. This work lives in `.worktrees/gpt2-streaming`, on
+`codex/gpt2-streaming`, based on public-service commit
+`e5971db3b79110cb62e92575a2054a87ba5b98c4`. The owner chose a **local laptop
+preview first**, followed by owner testing before production deployment.
+
+The goal is to display a reply as GPT-2 generates it while preserving the
+current model, sampling behavior, chat archives, and recovery rules. Keep the
+pinned GPT-2 XL checkpoint, CPU FP32, one resident model, and one inference
+worker. Idle browser chats need no resident KV cache. The active generation
+continues to own its existing cache, then releases it as it does today.
+
+Streaming can shorten the wait for visible reply text. Queueing, prompt
+prefill, and decoding still take time; total throughput is a separate
+measurement. Unicode characters and possible speaker boundaries sometimes
+require several tokens before any additional text is safe to show.
+
+## Preserve the existing generation path
+
+Add an optional, keyword-only observer to `Gpt2Runner.generate_result()` in
+[`runtime.py`](../src/gpt2_local/runtime.py):
+
+```python
+@dataclass(frozen=True)
+class SampledToken:
+    token_id: int
+    output_tokens: int
+    elapsed_seconds: float
+
+generate_result(..., on_token: Callable[[SampledToken], None] | None = None)
+```
+
+When present, a small custom Transformers `BaseStreamer` adapter skips the
+initial prompt batch and reports each subsequently generated token. Batch size
+remains one. Its elapsed time starts immediately before `model.generate()` and
+includes prefill. Keep the same generation arguments, stopping criteria, seed,
+raw output IDs, final decoding, accounting checks, and `GenerationResult`.
+Calls with no observer keep their existing argument behavior.
+
+The installed Transformers 5.18.0 CPU path evaluates stopping criteria before
+calling the token streamer. Normal completion calls `streamer.end()`, but an
+exception, including the cooperative deadline, can bypass that notification
+and the latest token callback. The worker must own terminal status; streamer
+completion alone cannot commit a chat. The built-in text streamer buffers
+words, so use the raw-token hook for per-token progress.
+
+Thread this optional observer through `_generate_reply()`, `ChatSession.reply()`
+and `ChatSession.regenerate()` in [`chat.py`](../src/gpt2_local/chat.py).
+`_PublicRunner` forwards it while retaining its tokenizer lock and deadline.
+The observer updates bounded job progress and notifies subscribers. It performs
+no socket writes, RNG calls, model calls, or thread-count changes. An observer
+error fails the job through the existing worker error path.
+
+## Decode a safe visible prefix
+
+Keep presentation decoding in a small, independently tested helper. Use the
+pinned Tokenizers 0.23.2 `DecodeStream(skip_special_tokens=True)` with the
+runner's backend tokenizer, under the existing tokenizer lock. Preserve the
+current `clean_up_tokenization_spaces=False` behavior. Retain raw generated
+token IDs independently of presentation text.
+
+GPT-2 uses byte-level BPE. One emoji can span multiple tokens; decoding each
+token independently can expose temporary replacement characters. A
+tokenizer-only probe against the cached pinned tokenizer confirmed that
+`DecodeStream.step()` returns no chunk while those bytes are incomplete and
+releases the complete character when possible. This probe loaded no model
+weights and establishes no generation performance.
+
+Next, withhold any suffix that might become the existing chat stop pattern:
+
+```python
+r"\n\n[^\s>]+>"
+```
+
+For example, hold a trailing newline, `"\n\n"`, or `"\n\nHuman"`.
+Release the held text when whitespace invalidates a speaker-label candidate,
+while checking overlapping newline prefixes. If `>` completes the boundary,
+discard the boundary and everything after it before publishing. Speaker labels
+have no fixed character limit, so a fixed-size suffix buffer would leak some
+labels. The reply-token limit bounds this holdback instead.
+
+At successful completion, use the existing `GenerationResult.text` as the
+authority. Release incomplete boundary prefixes that were ordinary reply text,
+such as `"\n\nHu"` at the token cap. `DecodeStream` has no final flush method;
+a trailing incomplete byte sequence can legitimately become a replacement
+character in final decoding. Reconcile with that result without changing
+sampling, IDs, or stopping rules. Every provisional visible string must be a
+prefix of the final accepted reply on successful jobs. Test this property.
+
+## Keep submission and streaming separate
+
+The current generation POST remains unchanged:
+
+```text
+POST /api/message or /api/regenerate
+    -> 202 {job_id, status, position}
+```
+
+After that acknowledgement, subscribe to:
+
+```text
+GET /api/jobs/<job_id>/events
+    -> Content-Type: text/event-stream; charset=utf-8
+```
+
+Use `fetch()` and a `ReadableStream` SSE parser. This provides explicit HTTP
+error handling, aborts, reconnect control, and fallback to the existing
+`GET /api/jobs/<job_id>` polling endpoint. The SSE wire format is defined by the
+[HTML standard](https://html.spec.whatwg.org/multipage/server-sent-events.html).
+Fetch consumers must implement parsing and reconnection themselves.
+
+Send cumulative snapshots, rather than append-only text deltas:
+
+```text
+id: 7
+event: progress
+data: {"version":1,"seq":7,"status":"running","position":0,"generated_tokens":5,"reply_text":" I like"}
+
+```
+
+`generated_tokens` counts tokens observed by the callback, including withheld
+speaker markers and special tokens. It is distinct from visible characters
+and from the final authoritative output-token count. Sequence numbers advance
+when text, token count, status, or queue position changes. Heartbeats do not
+advance them. Queued snapshots have empty reply text and a positive position;
+running snapshots have position zero.
+
+Retain one latest snapshot per job, under the existing condition lock. Do not
+retain an event history or a growing collection of partial strings. HTTP
+handlers copy the snapshot under the lock, then serialize and write outside
+it. Slow subscribers may skip revisions and receive the latest complete
+prefix; they must never delay inference.
+
+Every subscription immediately receives the latest snapshot. A reconnect can
+send a validated decimal `Last-Event-ID` header; its sequence is advisory,
+because the latest cumulative snapshot suffices without replay. The browser
+ignores stale or duplicate revisions within its current view. A newly loaded
+page accepts the initial snapshot even if an older saved cursor exists.
+
+After generation and existing final-state/archive validation succeed, publish
+a terminal event:
+
+```text
+id: 19
+event: complete
+data: {"version":1,"seq":19}
+
+```
+
+The browser then fetches the canonical result from `GET /api/jobs/<job_id>`
+and uses the existing commit path. A `failed` terminal event prompts the same
+GET to obtain the existing bounded error. Do not send a potentially 4 MiB
+archive through SSE. If that GET fails temporarily, retain the pending job ID
+and retry GET; terminal notification is not yet a successful browser commit.
+
+Add the latest progress snapshot to queued/running JSON job responses so
+polling fallback can still display partial text. Completed responses retain
+their existing canonical state. Expose the streaming capability through
+health, controlled initially by a proposed `--enable-streaming` flag.
+
+## Bound connections and recovery
+
+Initial limits for the preview and first release:
+
+| Item | Choice |
+| --- | --- |
+| Concurrent inference | Existing single worker |
+| Streams | Four globally, two per client IP |
+| HTTP handlers | Existing maximum of 16; streams occupy at most four |
+| Heartbeat | SSE comment every five seconds, including queueing/prefill |
+| Stream lease | 60 seconds, then reconnect to the same job |
+| Browser idle watchdog | 20 seconds, reset by received bytes/heartbeats |
+| Socket I/O timeout | Existing 15 seconds; stalled readers release their slot |
+| Maximum SSE frame/client parser buffer | 1 MiB of UTF-8 bytes per unfinished frame; reject oversized frames and fall back to polling |
+| Jobs, queue, replies, deadlines, result retention | Existing limits unchanged |
+
+Prove the frame limit sufficient for the configured reply cap with the actual
+pinned tokenizer; never truncate canonical replies to fit transport bounds.
+Frames contain bounded progress, with no input archive or repeated full
+context. Consume complete frames incrementally: one network chunk may contain
+several valid frames whose combined size exceeds the per-frame cap. The bound
+is not a total-stream limit or a JavaScript string-length limit. Keep the
+existing 256-token production cap, 300-second generation
+deadline, 300-second queue expiry, and 600-second completed-result retention.
+The deadline is cooperative and cannot interrupt one hung model forward.
+
+Reserve/release stream slots atomically. Return a retryable 503 before stream
+headers when slots are full; the browser polls its already accepted job.
+Release slots on disconnect, timeout, terminal status, expiry, and shutdown.
+Use a separate HTTP streaming response path: omit `Content-Length`, flush
+frames, retain no-store/security headers, and close the response on exit. The
+current HTTP/1.0 connection-close framing supports this; avoid a global HTTP
+protocol change. After headers are sent, handle errors inside the streaming
+path instead of trying to append a normal JSON HTTP response.
+
+Preserve exact Host/Origin validation, request rates, trusted-proxy client IP
+handling, CSP, no-referrer, and private job IDs. A job ID remains an unguessable
+bearer capability; subscribing does not newly bind it to an IP address.
+Do not log stream URLs, prompts, or reply payloads.
+
+The browser reconnects with bounded backoff. On EOF or a transport/parser error,
+check the existing job by GET, then reconnect or poll if still pending. Never
+repeat the generation POST automatically. A missing/expired job or server
+restart restores committed state and the draft. Closing a tab ends only its
+subscription; generation can finish within the existing deadline. An explicit
+Stop button and cancellation semantics are separate work.
+
+## Display partial replies without saving them as chats
+
+In [`public.html`](../src/gpt2_local/web/public.html), retain `committed` and
+`pending`. Save the exact prepared input-display snapshot and immutable
+submitted controls in IndexedDB with `job_id: null` before the generation
+POST, preserving the existing uncertain-request protection. After the 202
+acknowledgement, persist its job ID before subscribing. The display snapshot
+contains context blocks/counts, not a second full transcript.
+
+Whitelist `pending.display` fields: `context_text`, `context_blocks`,
+`context_tokens`, `retained_example_rounds`, and `dropped_rounds`.
+Copy only those fields from the prepared preview; exclude its full `turns` and
+chat archive. Store submitted settings separately, and retain regeneration's
+effective preview settings when displaying its provisional seed. Ordinary
+`preview.settings` currently describes the old session, so it cannot substitute
+for the submitted controls. Validate restored fields before rendering.
+
+Keep provisional reply text, its sequence, and generated-token count in a
+separate ephemeral view. After reload, the saved input display and latest job
+snapshot reconstruct that view. Do not recalculate the pending prompt using
+settings that may have changed since submission. Older pending records lacking
+the display snapshot use final-only polling, with provisional rendering
+disabled: progress text alone cannot reconstruct the corresponding input.
+
+Update one provisional GPT-2-colored span through `textContent`. Keep the
+prepared prompt visible and label the reply as in progress. Show the generated
+count separately; do not treat the evolving reply as an authoritative retained
+context token count. Render available text immediately, without a synthetic
+typing delay. Follow new text only when the reader was already near the bottom.
+Accessibility announcements should report status changes, not every token.
+
+Keep the last provisional view during transient connection failures. Export
+continues to use the committed archive, and stream updates do not write partial
+replies into it. At completion, fetch and validate the canonical state, then
+persist through the established commit path. Share terminal handling between
+streaming and polling, including the existing pending-job identity check.
+
+During regeneration, retain the old candidate and history in `committed` while
+showing the replacement provisionally. Success replaces it and preserves the
+old candidate as today. Failure restores it and the draft. Reconnection does
+not advance the seed or regenerate. Preserve independent tab storage,
+import/export format version 2, seeded examples, and Enter/Shift+Enter behavior.
+
+## Implement and verify in stages
+
+1. **Runtime observer and decoder.** Add the optional hook and presentation
+   helper, with model-free callback/stopping/decode tests. Cover prompt skipping,
+   EOS, deadline/callback exceptions, split emoji/CJK/combining marks, leading
+   spaces, incomplete bytes, arbitrary/long speaker labels, overlapping
+   newlines, false delimiter prefixes, and incomplete prefixes at token limit.
+   Use the real pinned tokenizer for decoder tests, without loading weights.
+2. **Backend transport.** Extend jobs, JSON progress, capability reporting, and
+   the SSE handler. Test early flush, heartbeats during a blocked fake prefill,
+   reconnects, expiry/shutdown, slow readers, subscriber limits, and concurrent
+   health/submission requests. Assert no model-callback socket writes and no
+   growing event backlog. Retain all origin, request, queue, and archive checks.
+3. **Browser integration.** Test byte-fragmented UTF-8/SSE frames, duplicate and
+   stale sequences, sequence gaps, malformed/oversized frames, multiple valid
+   frames in one oversized network chunk, literal HTML display, and capacity
+   fallback. Test reload/reconnect with exactly one
+   generation POST, terminal GET failures, export while pending, regeneration
+   rollback/history, seed wrapping, tab isolation, and unchanged uncertain-POST
+   handling. Use a deterministic fake runner for the first browser preview.
+4. **Local real-model parity and performance.** Review the fixed test prompts
+   and settings before running generation. Compare streaming off/on on the
+   same WSL runtime, first greedy and then sampled with fixed seeds, starting
+   each comparison from the same exported chat. Require
+   identical prompt/output IDs, final text, stopping reason, effective seed,
+   settings, and archive structure, excluding elapsed measurements,
+   `exported_at`, `cold_start_included`, and transient delivery measurements. Use short
+   32-token trials and one near-full-context trial, not a sustained load test.
+   Record source revision, prompt, settings, model/runtime provenance, and
+   cold/warm status in ignored private evidence files.
+5. **Owner preview.** Make the loopback laptop preview available for new chats
+   and imported copies of existing chats. Exercise visible incremental output,
+   regeneration, reload midway, and exports. Address findings and retain a
+   concrete reviewed candidate before requesting production approval.
+
+Existing test suites must remain passing. These are planned checks, not
+completed streaming verification. Keep reproduced results in
+[`VERIFICATION.md`](../VERIFICATION.md) when they exist.
+
+Measure queue wait from admission to worker start. Callback time to first token
+starts immediately before `model.generate()` and includes prefill and the
+stopping-check overhead before the hook; it does not isolate prefill alone.
+Record time to the first published safe prefix separately, leaving it null if
+no safe text was streamed before completion.
+
+For `N` observed generated tokens at callback times `t1` through `tN`, report
+decoding TPS as `(N - 1) / (tN - t1)` only when `N >= 2` and the denominator is
+positive. Retain the existing total TPS, which includes prefill. Measure browser
+receipt/first-paint latency on its own clock, with a recorded start point such
+as pressing Send; do not subtract unsynchronized browser/server timestamps.
+Record CPU utilization, process peak RSS, and cgroup memory events where
+applicable. Compare streaming overhead on the same machine, and do not infer
+production latency or sustained burst behavior from laptop TPS.
+
+## The selected laptop preview
+
+Use **<http://localhost:8891/>**, separate from existing chats and the public
+origin. Reuse `/root/.venvs/gpt2-xl` and its pinned cache, selecting this
+worktree through `PYTHONPATH`; do not reinstall the shared editable package.
+Use loopback, offline mode, and two Torch threads for the first trials.
+
+The following is the proposed WSL launch command **after implementation**.
+`--enable-streaming` does not exist yet:
+
+```bash
+PYTHONPATH='/mnt/c/Users/MikeFrank/Documents/=== FILES ===/-- AI --/GPT-2/.worktrees/gpt2-streaming/src' \
+  /root/.venvs/gpt2-xl/bin/python -m gpt2_local.public_chat \
+  --host 127.0.0.1 --port 8891 --offline --threads 2 \
+  --max-reply-tokens 256 --minimum-available-memory-gib 8 \
+  --enable-streaming
+```
+
+Set the browser reply allowance to 32 for the short trials. Keep the server cap
+at 256: the existing fresh-chat default is 120, and a server cap of 32 would
+reject initialization unless the interface also changed. Recheck available
+memory, model processes, and port 8891 on both WSL
+and Windows immediately before loading. If another laptop model is running,
+coordinate its shutdown/export instead of starting another resident copy.
+
+Read-only checks in this design session found Python 3.12.3, Torch 2.14.1+cpu,
+Transformers 5.18.0, and Tokenizers 0.23.2 in that WSL environment, approximately
+14.68 GiB available memory, and no identified GPT-2 Python process or listener
+on the candidate port. These are snapshots, not future capacity guarantees.
+No preview server was started and no real-model streaming test was run.
+
+## Production comes after the preview
+
+The current `gpt2-chat.com` deployment stays at its existing revision throughout
+local development and testing. Obtain owner approval of the concrete preview
+before rotating the candidate into production.
+
+If a Lightsail preview is later wanted, an SSH-tunneled loopback service can
+test the candidate without changing public DNS/Caddy, but it needs a separate
+planned window to drain and temporarily stop only the GPT-2 service. There is
+no demonstrated memory allowance for a second FP32 model beside production.
+Starting two `PublicChatApplication` instances around one runner would also
+start two inference workers and violate serialization. A shared inference
+broker is a larger project, outside this first increment.
+
+For the eventual rollout, transfer the reviewed source revision and close
+admission to new generation POSTs before draining accepted jobs. Use a tested
+GPT-2-only maintenance gate for `/api/message` and `/api/regenerate`, returning
+a retryable 503 with `accepted: false`, while preserving job GETs/streams,
+health, and other applications. Keep the gate closed until the candidate or
+rollback is healthy; merely observing an empty queue leaves a submission race.
+Back up the previous GPT-2 configuration/revision, retain the current
+account/thread/memory settings, and validate startup, TLS, first streamed text,
+reconnection, final archives, and unchanged chess-service health. Keep a tested
+rollback to the previous polling build. Recheck capacity before model startup.
+
+Caddy documents immediate flushing for `text/event-stream` responses in its
+[reverse proxy streaming reference](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
+Test actual first-event delivery through the deployed proxy; do not assume
+successful HTTPS proves unbuffered streaming. Exclude the SSE route from gzip
+for predictable first tests if configuration changes are needed, following
+the existing shared-Caddy lock/validation/in-place reload procedure. No proxy
+changes are needed for the laptop preview.
+
+## Source basis
+
+The design uses the checked-in runtime, chat transaction, public worker, and
+browser code at `e5971db`, plus read-only inspection of installed generation
+hooks and the pinned tokenizer. Relevant primary references are the
+[Transformers 5.18.0 generation source](https://github.com/huggingface/transformers/blob/v5.18.0/src/transformers/generation/utils.py),
+the [SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html),
+and the [Caddy streaming documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).

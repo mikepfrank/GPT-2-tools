@@ -120,6 +120,19 @@ results in `VERIFICATION.md`, recording runtime, exact prompt/settings,
 thread count, cold/warm status, and CPU/memory use. Core-count ratios alone
 do not predict GPT-2 inference throughput.
 
+## Streaming design branch
+
+Streaming design work starts from public-service tip `e5971db` in the isolated
+`.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose
+a local laptop preview first, followed by testing before a production rotation.
+[`docs/STREAMING.md`](docs/STREAMING.md) specifies the optional token observer,
+Unicode/speaker-boundary buffering, bounded SSE progress, recovery, and staged
+validation. This is a design only: no streaming implementation or preview is
+ready, no model was loaded for this design, and production remains unchanged.
+Use the shared WSL environment through `PYTHONPATH` and a separate loopback port;
+recheck capacity before loading, and obtain owner acceptance of the candidate
+before deploying it.
+
 ## Current state
 
 - The setup downloads and verifies the full 1.5B-class GPT-2 XL checkpoint;
