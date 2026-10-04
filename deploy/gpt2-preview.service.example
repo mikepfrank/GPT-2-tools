@@ -1,0 +1,31 @@
+[Unit]
+Description=GPT-2 XL streaming preview (CPU FP32)
+After=network.target
+
+[Service]
+Type=simple
+User=gpt-2
+Group=gpt-2
+WorkingDirectory=/home/gpt-2/GPT-2-streaming-preview
+EnvironmentFile=/etc/gpt2-preview.env
+# Require fully inactive production, MainPID=0, and an empty production cgroup.
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/gpt2-preview-preflight.py
+ExecStart=/home/gpt-2/.venvs/gpt2-public/bin/python -m gpt2_local.public_chat --host 127.0.0.1 --port 8898 --offline --threads ${GPT2_THREADS} --enable-streaming --public-origin ${GPT2_PUBLIC_ORIGIN} --trusted-proxy 127.0.0.1 --max-reply-tokens ${GPT2_MAX_REPLY_TOKENS} --minimum-available-memory-gib ${GPT2_MIN_AVAILABLE_MEMORY_GIB}
+# Preview is manually activated/restored; do not enable it at boot.
+Restart=no
+TimeoutStopSec=180
+UMask=0077
+Nice=10
+CPUWeight=10
+MemoryAccounting=yes
+MemoryHigh=8704M
+MemoryMax=9G
+MemorySwapMax=0
+OOMPolicy=stop
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/gpt-2/.cache/gpt2-public
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -1,0 +1,13 @@
+# Merge only this site into the existing Caddyfile under its maintenance lock.
+# A separate backend requires a gated/drained GPT-2 production pause first.
+test.gpt2-chat.com {
+    rewrite * ?
+    # Leave SSE uncompressed for the first proxy-delivery tests.
+    reverse_proxy 127.0.0.1:8898 {
+        flush_interval -1
+        header_up Host {http.request.hostport}
+        header_up X-Real-IP {http.request.remote.host}
+        header_up -X-Forwarded-For
+        header_up -Forwarded
+    }
+}

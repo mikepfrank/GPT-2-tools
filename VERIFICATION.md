@@ -946,3 +946,183 @@ above verifies recovery during active generation. The complete evidence is
 `dfe78c9a21128de8ff0863191bcd060bd28155a0b425d3a0415f59688fb0e472`.
 The browser was finally left on a fresh chat with the normal 120-token limit
 and two examples; the resident preview remained healthy and idle.
+
+## Lightsail streaming preview staging (2026-10-03 CDT)
+
+After the owner accepted the laptop preview and requested a hosted test, a
+Git bundle containing application commit
+`5389a30f5833c8bcaaf0314f1c0e1c63960f309e` was transferred into the separate
+`/home/gpt-2/GPT-2-streaming-preview` checkout owned by `gpt-2`. Bundle SHA-256:
+`ad5ed53635117853dbb76d3b80181a8708694c6e75caac932836eb3fee8758e4`.
+Production remained at `e5971db` in `/home/gpt-2/GPT-2-tools`; neither editable
+installation nor checkout was changed. The full **197-test Python suite**
+passed on Amazon Linux in **13.327 seconds**, including cached-tokenizer
+checks, without loading model weights. `pip check` found no broken requirements.
+The synthetic generation timings printed by these tests are not real TPS.
+
+Live inspection reported **16,558,186,496 bytes (15.42 GiB)** total RAM,
+**13,778,664 KiB (13.14 GiB)** available, **4,788,268 KiB (4.57 GiB)** free,
+and no swap. Production GPT-2 RSS was **7,174,892 KiB (6.84 GiB)**. Reclaimable
+file cache accounts for much of the available-memory figure; no safe combined
+budget or shared physical-page behavior was established for two resident
+FP32 models. A one-model test window remains the conservative plan.
+
+The preview unit/environment were installed and validated with
+`systemd-analyze verify`; it remained **inactive/static**, with a startup guard
+requiring inactive production, MainPID 0, and an empty production cgroup,
+loopback **8898**, two threads, FP32,
+streaming enabled, a 256-token cap, 8 GiB startup floor, and 8.5/9 GiB soft/hard
+memory limits. Only systemd's unit definitions were re-read; no service restarted.
+An unrelated pre-existing `acpid.socket` legacy `/var/run` warning did not
+prevent unit validation. Production and chess/Caddy PIDs remained
+**43867 / 4149 / 4313 / 4341**, respectively.
+
+The owner created `test.gpt2-chat.com`; the host resolved it to
+**16.145.194.176**. A complete parked Caddy candidate containing its separate
+site passed validation in `astra`'s proxy environment. Candidate SHA-256:
+`71a372868d75cb175b8e4bca649ebe9743b95d36412a705c9f29fa50762ff570`.
+The active Caddyfile remained
+`700beceabe7ed95cf8a08d2e20456abbae03a0fd4569aedf6cad92989438e5d9`, and
+production's environment remained
+`b1a380290d49e4abd19d8ba61eebfff4d81271ff05eeb5a23eeea057ab59fdba`.
+No preview model, live route, test-domain TLS certificate, or real hosted
+streaming request was exercised during staging. The owner then explicitly
+approved a temporary GPT-2-only production pause for this hosted preview.
+
+The lifecycle helper passed **11 focused tests** on Windows and on Amazon
+Linux (**0.031 seconds** there). These model-free checks cover admission gates,
+drain refusal, full result retention, model exclusivity, startup memory guards,
+immutable candidate validation, partial-write/reload rollback, and preserving
+the original Caddy bytes/inode. A separate read-only review found no remaining
+blocking defect in the approved helper path. The standalone preflight checks
+the production cgroup root; activation additionally checks descendants.
+
+At **2026-10-04 03:25:27 UTC**, `--prepare` saved five validated, root-owned,
+read-only full Caddy candidates and a private manifest under
+`/home/astra/.config/astra-chess/gpt2-preview-stage-20261004`. The original
+Caddyfile and the service/environment definitions were unchanged. The
+installed helper is `/home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py`,
+run with `/usr/bin/python3.12`; it is separate from the frozen application
+checkout. The model-exclusivity guard refused startup while production was
+active, without loading preview weights.
+
+After approval, a durable `gpt2-preview-transition-20261004-0330` transient
+systemd unit began activation. At **03:29:10.206842 UTC**, the gate was verified,
+accepted production work was drained, and the full **600-second** result
+retention window began. Production remained PID 43867 during that window;
+health GETs returned 200, generation POSTs returned a readable 503 with
+`accepted: false`, and both chess HTTPS sites returned 200 with unchanged PIDs.
+The tested activation path retains results before stopping only GPT-2,
+requires the old cgroup to be empty before loading the new model, verifies
+backend/TLS readiness, and opens test admission last. These staging and
+transition checks alone do not prove hosted streaming delivery.
+
+## Lightsail streaming preview activation (2026-10-03 CDT)
+
+The production result-retention window ended at **2026-10-04
+03:39:10.486915 UTC**. Production stopped cleanly, and the guarded preview
+started as `gpt-2`, **PID 54021**, on loopback 8898. The startup log reported
+**1,557,611,200 parameters**, CPU FP32 and **two Torch threads**; the checkpoint
+was mapped in 0.9 seconds. Mapping is not a warmed first inference. At
+**03:39:20.541803 UTC**, the helper emitted `preview_active` and exited
+successfully. No second Lightsail model was loaded and no chess process was
+stopped. Production application checkout remains `e5971db`; preview
+application checkout remains `5389a30`.
+
+An independent read-only verifier at **03:39:59 UTC** passed all assertions:
+production inactive/MainPID 0/empty cgroup, preview active under `gpt-2` with
+one known model process, exact preserved unit/drop-in/environment/guard hashes,
+unchanged Caddy/chess PIDs **4341 / 4149 / 4313**, preserved host/bind-mounted
+Caddy inode and attributes, and retained original configuration bytes. The
+active Caddyfile SHA-256 is
+`2a4b9815e1bead3e084ed84156c23e7da14d51a12a4d3c6fb96592007ce0088f`.
+Direct backend and normal public DNS/TLS health returned ready with
+`streaming: true`; production HTTPS returned maintenance 503 with
+`accepted: false`; both chess HTTPS roots returned 200. The test HTTP root
+redirected to HTTPS with 308; both older GPT-2 aliases retained their 308
+redirects to production. Certificate validation was never bypassed.
+
+A separate in-app browser tab completed three short synthetic star-prompt
+jobs, each with a 143-token input, zero examples, temperature 0.8, a 32-token
+allowance and the fixed October 3 context date. The first reply used seed 42;
+two regenerations used 43 and 44. Browser-reported model durations were
+**6.8 / 7.1 / 7.8 seconds**, with **11 / 13 / 15 raw generated tokens** and a
+new-message delimiter stop. These browser-rounded observations are not
+sustained benchmarks or end-to-end latency measurements. The first request
+after mapping included page-in/kernel initialization; OS cache state was not
+controlled.
+
+Seed 43 visibly streamed `" How"` at token one before reload, then recovered
+its completed reply at the same seed. A batched seed-44 trial captured
+`" Tell"` at token one, reloaded during generation, and showed
+`" Tell me how"` at token three while still pending with seed 44. It completed
+at 15 raw tokens, controls unlocked, and warning/error console logs were empty.
+Two earlier provisional-status observations missed the short in-progress
+window; the batched trial supplies the direct active-reload evidence.
+Private screenshots are under `outputs/deploy/streaming-hosted-*.jpg`.
+This verifies incremental browser delivery through the shared Caddy proxy
+and recovery of the same pending regeneration before final commit.
+
+An independent HTTPS client then completed exactly **two generation POSTs**
+with the reversible-computing prompt used in the laptop HTTP checks, fixed
+October 3 date, zero examples, temperature 0.8 and a 32-token allowance.
+Both input prompts contained **144 tokens**. The seed-42 reply generated
+**32 tokens** in **13.8907 seconds**, ending at the allowance. Seed-43
+regeneration generated **28 tokens** in **12.3936 seconds**, ending at a
+speaker stop sequence. Server first-token callbacks occurred at
+**2.7973 / 2.8507 seconds**, first safe-text callbacks at
+**2.7973 / 2.8507 seconds**, and decoding rates excluding first-token prefill
+were **2.7948 / 2.8299 tokens/second**. These are two warmed operational
+observations after the browser trials; cache state was not controlled.
+
+The client ran as `gpt-2` with the existing **Python 3.12.12 / OpenSSL 3.2.2**
+on Lightsail, using normal public DNS and verified TLS. Client first-progress
+latencies were **0.0297 / 0.0431 seconds**; these initial snapshots contained
+zero sampled tokens. First sampled-token/safe-text receipt was
+**2.8123 / 2.8674 seconds** from generation POST start, including acknowledgement,
+queue, TLS/SSE setup, proxy delivery and parser observation. Same-host client
+timings do not measure a remote user's network or browser paint latency.
+External Windows curl separately passed TLS validation and health 200, and
+the browser above supplies external incremental-delivery proof. Bundled
+Windows Python/OpenSSL health attempts failed before any generation POST
+(socket permission/reset); their zero-job records are retained as client
+limitations, not hosted application or certificate failures.
+
+The first SSE connection closed after sampled token one and reconnected to
+the same job while its initial resumed snapshot still reported running.
+Exactly two SSE connections were used for that job. Both jobs passed stable
+safe prefixes, progress/final raw-count equality, health during inference,
+exact input/output IDs and settings, terminal GET retrieval, export/import
+equality except `exported_at`, unchanged source archives, and retained original
+seed-42 regeneration history. Root/API query stripping and wrong-origin
+rejection also passed. Private evidence is
+`outputs/deploy/streaming-hosted-smoke-lightsail-20261003.json`, **294,513 bytes**,
+SHA-256 `cb415e9fe0ea700dfff88dff84bde40b5b2098c05dc1b7a1b7a9cde4b42c3726`.
+
+At **03:48:21 UTC**, the final independent verifier passed all invariants
+again, with the preview idle and both chess sites healthy. Process RSS was
+**6,630,032 KiB (6.323 GiB)** and lifetime peak RSS **6,654,096 KiB (6.346 GiB)**.
+Host available RAM was **14,327,108 KiB (13.663 GiB)**, with no swap. Preview
+cgroup memory-current/peak were only **446.2 / 470.4 MiB**, much lower than
+process RSS; shared mapped file-cache pages can retain charges outside this
+cgroup after the warm-cache service transition. Those counters do not prove
+that the full model needs under 500 MiB or that a cold-cache start fits the
+9 GiB limit. High/max/OOM event counters and CPU throttling counters remained
+zero throughout these short tests.
+
+Between the two resource samples, preview CPU accounting increased by
+**95.400 seconds** over **502.835 wall seconds**, averaging **0.190 busy CPUs**
+or **4.743% of four host CPUs**. This interval includes browser automation and
+idle waits; it is the preview cgroup's usage, not whole-instance utilization,
+active-generation utilization, an AWS burst-credit reading or sustained-load
+proof. The preview retains two Torch threads and the existing low scheduling
+weight. Source/model/unit identity and private resource/transition evidence
+are retained under `outputs/deploy`; the lifecycle helper's local and installed
+SHA-256 matched
+`77c7175dd9093d955e8d8475b2a5f028f7c1c03c1c8675a2032707d4d431df99`.
+
+The hosted tab was left on a fresh chat with the normal 120-token allowance
+and two examples. **https://test.gpt2-chat.com/** remains active for owner
+testing; production GPT-2 remains paused at its original revision. The local
+laptop preview remains separate. Streaming has not been rotated into
+production and owner acceptance of the hosted preview remains pending.

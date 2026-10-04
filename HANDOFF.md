@@ -52,7 +52,8 @@ The owner requests a modest anonymous public beta on Amazon Linux, running
 as the existing `gpt-2` account, with browser-owned chat state and compatible
 JSON import/export. Preserve the exact checkpoint and CPU FP32 baseline.
 One inference at a time is acceptable; the public backend implements a bounded
-queue. Streaming and concurrent inference are later work. Keep throughput
+queue. Streaming is implemented in the isolated preview below; concurrent
+inference remains later work. Keep throughput
 measurements short and reproducible; avoid sustained CPU load tests by default.
 
 The initial read-only `ssh lightsail` inventory on October 2, 2026 found
@@ -127,11 +128,13 @@ results in `VERIFICATION.md`, recording runtime, exact prompt/settings,
 thread count, cold/warm status, and CPU/memory use. Core-count ratios alone
 do not predict GPT-2 inference throughput.
 
-## Local streaming preview
+## Streaming previews
 
 Streaming work starts from public-service tip `e5971db` in the isolated
 `.worktrees/gpt2-streaming` checkout, on `codex/gpt2-streaming`. The owner chose
-a local laptop preview first, followed by testing before a production rotation.
+a local laptop preview first and accepted it. The owner has now authorized a
+temporary GPT-2-only production pause for hosted preview testing; production
+rollout still requires acceptance of the hosted preview.
 The optional raw-token observer, safe Unicode/speaker-boundary decoder, bounded
 SSE subscriptions, cumulative progress, polling fallback, and same-job reload
 recovery are implemented. Partial text remains outside committed archives;
@@ -155,9 +158,74 @@ After it stops, `./streaming-preview.ps1` launches a foreground preview; Ctrl+C
 stops that foreground process. Do not launch a second resident model.
 [`docs/STREAMING.md`](docs/STREAMING.md) gives startup and implementation details.
 Use the shared WSL environment through `PYTHONPATH`, recheck capacity before
-loading, and obtain owner acceptance before deploying this candidate.
-The public service and its Caddy configuration were not touched during this
-streaming implementation or validation.
+loading. The public service and its Caddy configuration were not touched during
+the laptop streaming implementation or validation.
+
+Hosted preview is **verified and active for owner testing**, October 3 CDT /
+October 4 UTC, at <https://test.gpt2-chat.com/>.
+Production application code remains `e5971db`. The separate
+`/home/gpt-2/GPT-2-streaming-preview` checkout is the reviewed application
+candidate `5389a30`, which passed the 197-test Python suite and `pip check` on
+Amazon Linux. Lifecycle tooling is installed separately at
+`/home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py`; do not
+attribute its newer tooling revision to the candidate application's evidence.
+The static, non-boot-enabled `gpt2-preview.service` is the sole resident
+Lightsail model on loopback 8898 at <https://test.gpt2-chat.com/>. It retains
+CPU FP32, two Torch threads, the 8 GiB startup floor and 8.5/9 GiB limits.
+
+The durable unit `gpt2-preview-transition-20261004-0330` began production's
+600-second result-retention wait at **2026-10-04 03:29:10.206842 UTC**, ended
+it at **03:39:10.486915 UTC**, and emitted `preview_active` at
+**03:39:20.541803 UTC**, preview PID **54021**. It retained GET results during
+the generation gate before stopping only GPT-2 production. Separate read-only
+checks passed public DNS/TLS and streaming-capable health, canonical
+maintenance 503/`accepted: false`, one resident model, and preserved
+unit/drop-in/env/guard hashes and Caddy inode. Chess PIDs 4149/4313 and Caddy
+PID 4341 are unchanged. Production root/API remain in maintenance while
+preview testing runs. Real HTTPS browser checks passed visible incremental
+tokens, same-job recovery after a mid-generation reload, final completion
+with controls unlocked, and a clean console. A fresh hosted tab is ready with
+the normal 120-token allowance and two examples. The owner can try it now;
+hosted-preview acceptance and production rollout approval are still pending.
+Separate hosted HTTP checks also passed active reconnect, canonical token IDs,
+settings, archive round trips, regeneration history, query handling and exact
+origin rejection. The final independent check found no memory pressure/OOM
+events, preserved service/configuration invariants, and an idle preview.
+See `VERIFICATION.md` for timings and detailed evidence.
+
+The prepared integrity/backups stage is
+`/home/astra/.config/astra-chess/gpt2-preview-stage-20261004`. Activation is
+completed successfully with this historical command; inspect its journal,
+do not repeat it against the active preview:
+
+```bash
+sudo systemd-run --unit=gpt2-preview-transition-20261004-0330 --collect \
+  --property=Type=exec /usr/bin/python3.12 \
+  /home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py \
+  --activate --stage /home/astra/.config/astra-chess/gpt2-preview-stage-20261004
+sudo journalctl -u gpt2-preview-transition-20261004-0330 -f
+```
+
+For restoration, use the same stage and a fresh durable unit so an SSH
+disconnect cannot interrupt the full drain/result-retention window:
+
+```bash
+restore_unit="gpt2-preview-restore-$(date -u +%Y%m%d-%H%M%S)"
+sudo systemd-run --unit="$restore_unit" --collect --property=Type=exec \
+  /usr/bin/python3.12 /home/ec2-user/gpt2-preview-tooling/scripts/lightsail-preview.py \
+  --restore --stage /home/astra/.config/astra-chess/gpt2-preview-stage-20261004
+sudo journalctl -u "$restore_unit" -f
+```
+
+Restore gates preview generation and preserves completed results for another
+600 seconds before stopping its model. It starts the original production
+backend, restores the original Caddy bytes/inode, then verifies TLS and chess
+health; require `production_restored` and readiness evidence. Both transitions
+hold the shared proxy lock, validate/back up complete candidates, preserve
+unit/env/guard bytes, and enforce one model; the lock is released during owner
+testing. Undrainable accepted work is never force-stopped. Test and production
+origins have separate browser storage; use JSON export/import for transfers.
+See `docs/STREAMING.md` for preparation and failure/recovery details.
 
 ## Current state
 
