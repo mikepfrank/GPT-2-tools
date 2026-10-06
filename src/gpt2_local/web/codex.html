@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>GPT-2 × Codex · Conversation lab</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f1f3f5; --panel: #fff; --soft: #f7f8fa; --ink: #242b39;
+      --muted: #657082; --line: #dce1e8; --accent: #514c9b; --hover: #423e82;
+      --focus: #9c95df; --human: #286697; --gpt2: #ad5437; --codex: #6651a5;
+      --error: #a93237; --error-bg: #fff2f2; --shadow: 0 12px 35px rgb(33 40 65 / 4%);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--page); }
+    button, input, select, textarea { font: inherit; }
+    button, select, input { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); }
+    button { padding: 9px 13px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+    button:hover:enabled { background: var(--soft); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover:enabled { background: var(--hover); }
+    button:disabled, input:disabled, select:disabled { opacity: .5; cursor: default; }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    input, select { padding: 9px 10px; }
+    [hidden] { display: none !important; }
+    main { max-width: 1530px; margin: 0 auto; padding: 24px 30px 18px; }
+    .heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 20px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 43px; height: 43px; display: grid; place-items: center; border-radius: 12px; background: var(--accent); color: #fff; font-family: ui-monospace, Consolas, monospace; font-size: 20px; font-weight: 700; }
+    h1 { font-size: 1.45rem; letter-spacing: -.045em; line-height: 1.2; margin: 0; font-weight: 650; }
+    .subtitle { color: var(--muted); font-size: .85rem; margin: 5px 0 0; }
+    .beta { display: inline-block; vertical-align: middle; margin-left: 8px; font-size: .65rem; border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+    .toolbar { display: flex; gap: 8px; align-items: center; }
+    .tools { position: relative; }
+    .tools summary { list-style: none; cursor: pointer; border: 1px solid var(--line); border-radius: 7px; padding: 9px 13px; background: var(--panel); font-weight: 600; }
+    .tools summary::-webkit-details-marker { display: none; }
+    .settings-card { position: absolute; z-index: 3; top: calc(100% + 9px); right: 0; padding: 17px; width: 270px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow); }
+    .settings-card label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 7px; }
+    .settings-card input, .settings-card select { width: 100%; margin-bottom: 14px; }
+    .settings-card p { color: var(--muted); font-size: .8rem; margin: 0 0 13px; line-height: 1.5; }
+    .settings-card button { width: 100%; }
+    .session-bar { display: flex; justify-content: space-between; gap: 14px; color: var(--muted); font-size: .8rem; margin: 0 2px 13px; }
+    .connection { display: flex; align-items: center; gap: 7px; }
+    .dot { width: 7px; height: 7px; background: #6b9482; border-radius: 50%; flex: none; }
+    .dot.busy { background: var(--codex); animation: pulse 1.5s ease-in-out infinite; }
+    .dot.error { background: var(--error); }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .budget { font-variant-numeric: tabular-nums; text-align: right; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(320px, .82fr); gap: 17px; }
+    .panel { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+    .panel-header { padding: 17px 20px 15px; border-bottom: 1px solid var(--line); }
+    .panel-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    h2 { margin: 0; font-size: .95rem; font-weight: 650; }
+    .meta { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+    .panel-note { margin: 7px 0 0; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+    .token-meter { height: 4px; border-radius: 3px; overflow: hidden; background: var(--line); display: flex; margin-top: 13px; }
+    .token-used { background: var(--accent); width: 0; }
+    .token-reserve { background: var(--muted); opacity: .3; width: 11.71875%; margin-left: auto; }
+    .legend { display: flex; gap: 13px; flex-wrap: wrap; font-size: .74rem; margin-top: 10px; color: var(--muted); }
+    .legend span::before { display: inline-block; content: ""; width: 6px; height: 6px; background: currentColor; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+    .role-human { color: var(--human); } .role-gpt2 { color: var(--gpt2); } .role-codex { color: var(--codex); }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace; line-height: 1.66; tab-size: 4; }
+    #context { margin: 0; padding: 20px; background: var(--soft); font-size: .91rem; height: clamp(310px, 49vh, 680px); overflow-y: auto; }
+    .history-body { height: clamp(310px, 49vh, 680px); overflow-y: auto; padding: 18px 19px; scroll-behavior: auto; }
+    .history-message + .history-message { margin-top: 20px; }
+    .message-meta { display: flex; align-items: baseline; gap: 8px; font-size: .79rem; margin-bottom: 7px; }
+    .message-role { font-weight: 700; }
+    .message-time { color: var(--muted); font-size: .71rem; margin-left: auto; }
+    .example-tag { color: var(--muted); font-size: .67rem; border: 1px solid var(--line); padding: 1px 4px; border-radius: 3px; }
+    .message-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .89rem; line-height: 1.6; }
+    #active-message { margin-top: 20px; padding-top: 16px; border-top: 1px dashed var(--line); }
+    .active-note { color: var(--muted); font-size: .71rem; }
+    .empty-history { color: var(--muted); font-size: .85rem; line-height: 1.6; margin: 12px 0; }
+    .history-footer { min-height: 38px; display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 8px 19px; border-top: 1px solid var(--line); color: var(--muted); font-size: .74rem; }
+    .history-footer button { font-size: .74rem; padding: 3px 7px; }
+    .context-footer { min-height: 38px; padding: 11px 20px; border-top: 1px solid var(--line); font-size: .74rem; color: var(--muted); }
+    .composer { margin-top: 17px; padding: 17px 20px; }
+    .composer-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+    .composer-top label { font-size: .86rem; font-weight: 650; }
+    .target-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .78rem; }
+    .target-control select { padding: 5px 9px; min-width: 120px; font-size: .8rem; }
+    textarea { width: 100%; min-height: 87px; max-height: 280px; resize: vertical; padding: 12px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--ink); line-height: 1.5; }
+    textarea::placeholder { color: var(--muted); opacity: .85; }
+    .composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+    .keyboard-hint { color: var(--muted); font-size: .76rem; margin: 0; }
+    .composer-actions { display: flex; align-items: center; gap: 8px; }
+    .notice { margin: 11px 0 0; padding: 10px 13px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); line-height: 1.5; font-size: .82rem; }
+    .notice.error { border-color: var(--error); background: var(--error-bg); color: var(--error); }
+    .notice-actions { display: flex; gap: 8px; margin-top: 9px; }
+    .notice-actions button { padding: 5px 9px; font-size: .78rem; }
+    .footnote { color: var(--muted); font-size: .73rem; line-height: 1.5; margin: 13px 2px 0; }
+    @media (prefers-color-scheme: dark) {
+      :root { color-scheme: dark; --page: #13161e; --panel: #1b202b; --soft: #171c26; --ink: #e2e5ed; --muted: #9ca7ba; --line: #323a4b; --accent: #a89ae7; --hover: #c1b5f3; --focus: #8275be; --human: #86bde8; --gpt2: #ecaa8c; --codex: #bca9f4; --error: #ffabab; --error-bg: #2c2029; --shadow: none; }
+      button.primary, .brand-mark { color: #19152a; }
+    }
+    @media (max-width: 900px) {
+      main { padding: 20px 18px; }
+      .workspace { grid-template-columns: minmax(0, 1fr) minmax(280px, .85fr); gap: 12px; }
+      .heading { align-items: flex-start; gap: 14px; }
+      .toolbar { flex-wrap: wrap; justify-content: flex-end; }
+      .panel-header, #context, .composer { padding-left: 16px; padding-right: 16px; }
+      .history-body { padding: 16px; }
+    }
+    @media (max-width: 680px) {
+      main { padding: 18px 12px; }
+      .heading { display: block; margin-bottom: 15px; }
+      .toolbar { margin-top: 16px; justify-content: flex-start; }
+      .toolbar button, .tools summary { font-size: .8rem; padding: 8px 10px; }
+      .settings-card { left: 0; right: auto; }
+      .workspace { grid-template-columns: 1fr; }
+      #context { height: 44vh; min-height: 250px; }
+      .history-body { height: 34vh; min-height: 210px; }
+      .session-bar { flex-wrap: wrap; gap: 5px; }
+      .budget { text-align: left; }
+      .composer-top { align-items: center; }
+      .composer-bottom { align-items: flex-end; }
+      .keyboard-hint { max-width: 180px; line-height: 1.5; }
+      .composer-actions button { padding: 9px 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="heading">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">&gt;_</div>
+        <div><h1>GPT-2 × Codex <span class="beta">BETA</span></h1><p class="subtitle">Three voices. One small context window.</p></div>
+      </div>
+      <div class="toolbar" aria-label="Conversation controls">
+        <button id="pause" type="button" disabled>Pause activity</button>
+        <button id="export" type="button" disabled>Export chat</button>
+        <details class="tools" id="settings-details">
+          <summary>Settings</summary>
+          <div class="settings-card">
+            <label for="temperature">GPT-2 temperature</label>
+            <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.8">
+            <p>GPT-2 replies use up to 120 tokens. Codex keeps its chat messages to about a paragraph.</p>
+            <button id="save-settings" type="button" disabled>Apply temperature</button>
+          </div>
+        </details>
+        <details class="tools" id="new-details">
+          <summary>New chat</summary>
+          <div class="settings-card">
+            <label for="example-rounds">Seeded example rounds</label>
+            <select id="example-rounds"><option value="0">0 examples</option><option value="1" selected>1 example</option><option value="2">2 examples</option></select>
+            <p>Your current chat stays saved privately. A new chat starts its own history.</p>
+            <button id="new-chat" type="button">Start new chat</button>
+          </div>
+        </details>
+      </div>
+    </header>
+    <div class="session-bar">
+      <span class="connection"><span id="status-dot" class="dot"></span><span id="status" role="status" aria-live="polite">Connecting…</span></span>
+      <span id="budget" class="budget" title="Shared daily API allowance, measured in UTC. Requests charge conservative allowances before execution. GPT-2 runs locally.">Daily API allowance: — / $10.00</span>
+    </div>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="context-title">
+        <div class="panel-header">
+          <div class="panel-title"><h2 id="context-title">GPT-2’s current context</h2><span class="meta" id="token-count">— / 1,024 tokens</span></div>
+          <p class="panel-note">The complete text GPT-2 sees. Older messages leave this window as it fills.</p>
+          <div class="token-meter" role="meter" id="token-meter" aria-label="GPT-2 context tokens" aria-valuemin="0" aria-valuemax="1024" aria-valuenow="0"><span class="token-used" id="token-used"></span><span class="token-reserve" id="token-reserve"></span></div>
+          <div class="legend"><span class="role-human">Human</span><span class="role-gpt2">GPT-2</span><span class="role-codex">Codex</span><span>120 tokens reserved for a reply</span></div>
+        </div>
+        <pre id="context" tabindex="0" aria-label="Exact current GPT-2 context">Connecting to your conversation…</pre>
+        <div class="context-footer">GPT-2 XL · original 2019 model · 1,024-token window</div>
+      </section>
+      <section class="panel" aria-labelledby="history-title">
+        <div class="panel-header">
+          <div class="panel-title"><h2 id="history-title">Conversation history</h2><span class="meta" id="message-count">— messages</span></div>
+          <p class="panel-note">Scroll independently to revisit messages beyond GPT-2’s current window.</p>
+          <div class="legend"><span class="role-human">Human</span><span class="role-gpt2">GPT-2</span><span class="role-codex">Codex</span></div>
+        </div>
+        <div id="history" class="history-body" tabindex="0" aria-label="Conversation history">
+          <div id="messages"><p class="empty-history">Your conversation will appear here.</p></div>
+          <article id="active-message" hidden><div class="message-meta"><span id="active-role" class="message-role"></span><span class="active-note">in progress</span></div><p id="active-content" class="message-content"></p></article>
+        </div>
+        <div class="history-footer"><span id="history-note">Full history is saved privately for this chat.</span><button id="latest" type="button" hidden>Jump to latest ↓</button></div>
+      </section>
+    </div>
+    <form id="composer" class="panel composer">
+      <div class="composer-top"><label for="message">Join the conversation</label><div class="target-control"><label for="target">To</label><select id="target"><option value="auto">Auto · Codex decides</option><option value="codex">Codex</option><option value="gpt2">GPT-2</option></select></div></div>
+      <textarea id="message" placeholder="Address Codex or GPT-2, or let Codex work out who you mean…" autocomplete="off" required></textarea>
+      <div class="composer-bottom"><p class="keyboard-hint">Enter to send · Shift+Enter for a new line</p><div class="composer-actions"><button id="send" class="primary" type="submit" disabled>Send message ↑</button></div></div>
+    </form>
+    <div id="notice" class="notice" hidden role="status" aria-live="polite"><span id="notice-text"></span><div id="notice-actions" class="notice-actions" hidden><button id="retry-message" type="button" hidden>Retry same message</button><button id="reconnect" type="button" hidden>Reconnect</button></div></div>
+    <p class="footnote">Codex can work in the background and invite GPT-2 to respond. After a quiet minute, the conversation can continue for up to three autonomous turns, with longer waits between turns. Activity pauses when you leave the page. GPT-2’s replies can be unpredictable.</p>
+  </main>
+  <script id="chat-helpers">
+    "use strict";
+    const CodexChatHelpers = (() => {
+      const roles = {Human: "role-human", "GPT-2": "role-gpt2", Codex: "role-codex"};
+      function apiBase(href) {
+        const url = new URL(href);
+        url.hash = ""; url.search = "";
+        if (!url.pathname.endsWith("/")) url.pathname += "/";
+        return new URL("api/", url).href;
+      }
+      function storageKey(href) { return "gpt2-codex:v1:" + apiBase(href); }
+      function contextBlocks(state) {
+        const blocks = state.context_blocks;
+        if (Array.isArray(blocks) && blocks.every(block => block && typeof block.text === "string" &&
+          (block.role === "context" || Object.hasOwn(roles, block.role))) &&
+          blocks.map(block => block.text).join("") === state.context_text) return blocks;
+        return [{role: "context", text: state.context_text}];
+      }
+      function isBusy(state) { return Boolean(state && ["queued", "thinking", "generating"].includes(state.status)); }
+      function pollDelay(state, failures = 0) { return failures ? Math.min(30000, 2000 * 2 ** Math.min(failures - 1, 4)) : isBusy(state) ? 400 : 2000; }
+      function acceptsState(current, incoming) {
+        return !current || current.session_id !== incoming.session_id ||
+          !Number.isSafeInteger(current.revision) || !Number.isSafeInteger(incoming.revision) || incoming.revision >= current.revision;
+      }
+      function pendingAccepted(pending, state) {
+        return Boolean(pending && pending.session_id === state.session_id && (state.last_request_id === pending.request_id ||
+          Array.isArray(state.messages) && state.messages.some(message => message.role === "Human" && message.request_id === pending.request_id)));
+      }
+      function describeStatus(state) {
+        if (!state) return "Connecting…";
+        if (state.status === "queued") return "Waiting for a turn…";
+        if (state.status === "thinking") return "Codex is thinking…";
+        if (state.status === "generating") return "GPT-2 is responding…";
+        if (state.error) return "Conversation needs attention";
+        if (state.paused) return "Autonomous activity paused";
+        if (Number.isFinite(state.next_idle_seconds)) return `Ready · next autonomous turn in ${Math.max(0, Math.ceil(state.next_idle_seconds))}s`;
+        if (state.autonomous_turns >= 3) return "Ready · waiting for you";
+        return "Ready for your message";
+      }
+      function budgetText(budget) {
+        if (!budget || !Number.isFinite(budget.admitted_usd) || !Number.isFinite(budget.daily_limit_usd)) return "Daily API allowance: — / $10.00";
+        return `Daily API allowance: $${budget.admitted_usd.toFixed(2)} / $${budget.daily_limit_usd.toFixed(2)}`;
+      }
+      function budgetTooltip(budget) {
+        const day = budget && typeof budget.utc_day === "string" ? ` for ${budget.utc_day}` : "";
+        const estimate = budget && Number.isFinite(budget.reported_estimate_usd) ? ` Reported usage estimate: $${budget.reported_estimate_usd.toFixed(2)}.` : "";
+        return `Shared API allowance${day} (UTC). Each request charges a conservative allowance before execution, including interrupted requests.${estimate} GPT-2 runs locally.`;
+      }
+      function messageTime(value, full = false) {
+        if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return "";
+        const time = new Date(typeof value === "number" ? value * 1000 : value);
+        if (!Number.isFinite(time.getTime())) return "";
+        return full ? time.toLocaleString() : time.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+      }
+      function validateTemperature(text) {
+        const value = Number(text);
+        if (!String(text).trim() || !Number.isFinite(value) || value < 0 || value > 2) throw new Error("Choose a temperature between 0 and 2.");
+        return value;
+      }
+      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, describeStatus, budgetText, budgetTooltip, messageTime, validateTemperature};
+    })();
+  </script>
+  <script>
+    "use strict";
+    const helpers = CodexChatHelpers;
+    const element = id => document.getElementById(id);
+    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "example-rounds", "new-chat", "new-details", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "reconnect"].map(id => [id, element(id)]));
+    const base = helpers.apiBase(location.href);
+    const key = helpers.storageKey(location.href);
+    let sessionId = readSaved("session");
+    let state = null, pending = readSaved("pending", true), mutation = false, stopped = false;
+    let timer = null, failures = 0, pollSequence = 0, sessionEpoch = 0, historySignature = "", lastContext = null;
+    let connectionError = "", actionError = "";
+
+    function readSaved(name, json = false) {
+      try { const value = localStorage.getItem(key + ":" + name); return json && value ? JSON.parse(value) : value; } catch (_) { return null; }
+    }
+    function save(name, value) {
+      try { if (value === null) localStorage.removeItem(key + ":" + name); else localStorage.setItem(key + ":" + name, typeof value === "string" ? value : JSON.stringify(value)); } catch (_) { /* Storage is optional; the server still owns the conversation. */ }
+    }
+    function endpoint(suffix = "", id = sessionId) { return "sessions/" + encodeURIComponent(id) + suffix; }
+    async function request(path, body) {
+      let response;
+      try {
+        response = await fetch(new URL(path, base), {credentials: "same-origin", cache: "no-store", ...(body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})});
+      } catch (_) { throw new Error("Connection interrupted. Your conversation and unsent message are still here."); }
+      let payload;
+      try { payload = await response.json(); } catch (_) { throw new Error("The server returned an unreadable response. Reconnecting…"); }
+      if (!response.ok) {
+        const error = new Error(typeof payload.error === "string" ? payload.error : `The request failed (${response.status}).`);
+        error.status = response.status; error.accepted = payload.accepted; throw error;
+      }
+      return payload;
+    }
+    function atBottom(node) { return node.scrollHeight - node.scrollTop - node.clientHeight < 55; }
+    function jumpLatest() { ui.history.scrollTop = ui.history.scrollHeight; ui.latest.hidden = true; }
+    function refreshControls() {
+      const unavailable = !state || mutation;
+      ui.send.disabled = unavailable || helpers.isBusy(state) || Boolean(pending);
+      ui.pause.disabled = unavailable;
+      ui.export.disabled = !state;
+      ui["save-settings"].disabled = unavailable || helpers.isBusy(state);
+      ui["new-chat"].disabled = mutation;
+      ui.target.disabled = mutation || Boolean(pending);
+      ui.composer.setAttribute("aria-busy", String(mutation || helpers.isBusy(state)));
+      ui.pause.textContent = state && state.paused ? "Resume activity" : "Pause activity";
+      ui.pause.setAttribute("aria-pressed", String(Boolean(state && state.paused)));
+      ui["retry-message"].disabled = mutation || !state || helpers.isBusy(state);
+    }
+    function refreshNotice() {
+      const uncertain = Boolean(pending);
+      const error = actionError || connectionError || state && state.error || "";
+      ui.notice.hidden = !error && !uncertain;
+      ui.notice.classList.toggle("error", Boolean(error));
+      ui["notice-text"].textContent = error || (uncertain ? "This message has not been confirmed yet. Reconnecting will check its status; retry sends the same request safely." : "");
+      ui["retry-message"].hidden = !uncertain;
+      ui.reconnect.hidden = !connectionError;
+      ui["notice-actions"].hidden = !uncertain && !connectionError;
+      ui.status.textContent = connectionError ? "Connection interrupted · reconnecting" : helpers.describeStatus(state);
+      ui["status-dot"].classList.toggle("error", Boolean(connectionError || state && state.error));
+      ui["status-dot"].classList.toggle("busy", !connectionError && helpers.isBusy(state));
+    }
+    function renderContext(incoming) {
+      if (incoming.context_text === lastContext) return;
+      const follow = lastContext === null || atBottom(ui.context);
+      const fragment = document.createDocumentFragment();
+      for (const block of helpers.contextBlocks(incoming)) {
+        const span = document.createElement("span");
+        span.className = helpers.roles[block.role] || ""; span.textContent = block.text; fragment.appendChild(span);
+      }
+      ui.context.replaceChildren(fragment); lastContext = incoming.context_text;
+      if (follow) ui.context.scrollTop = ui.context.scrollHeight;
+    }
+    function renderHistory(incoming) {
+      const messages = Array.isArray(incoming.messages) ? incoming.messages : [];
+      const signature = JSON.stringify(messages);
+      const follow = !historySignature || atBottom(ui.history);
+      if (signature !== historySignature) {
+        const fragment = document.createDocumentFragment();
+        if (!messages.length) { const empty = document.createElement("p"); empty.className = "empty-history"; empty.textContent = "Say hello to start your conversation with GPT-2 and Codex."; fragment.appendChild(empty); }
+        for (const message of messages) {
+          const article = document.createElement("article"); article.className = "history-message";
+          const meta = document.createElement("div"); meta.className = "message-meta";
+          const role = document.createElement("span"); role.className = "message-role " + (helpers.roles[message.role] || ""); role.textContent = message.role;
+          meta.appendChild(role);
+          if (message.example) { const example = document.createElement("span"); example.className = "example-tag"; example.textContent = "example"; meta.appendChild(example); }
+          const time = document.createElement("time"); time.className = "message-time"; time.textContent = helpers.messageTime(message.created_at); time.title = helpers.messageTime(message.created_at, true); meta.appendChild(time);
+          const text = document.createElement("p"); text.className = "message-content"; text.textContent = String(message.content || "");
+          article.append(meta, text); fragment.appendChild(article);
+        }
+        ui.messages.replaceChildren(fragment); historySignature = signature;
+      }
+      const active = incoming.active;
+      ui["active-message"].hidden = !active;
+      if (active) {
+        ui["active-role"].textContent = active.role;
+        ui["active-role"].className = "message-role " + (helpers.roles[active.role] || "");
+        ui["active-content"].textContent = active.content || (active.role === "GPT-2" ? "Generating…" : "Working on a response…");
+      }
+      ui["message-count"].textContent = `${messages.length.toLocaleString()} ${messages.length === 1 ? "message" : "messages"}`;
+      ui["history-note"].textContent = incoming.history_truncated ? "Showing recent history. Export includes the full saved chat." : "Full history is saved privately for this chat.";
+      if (follow) jumpLatest(); else ui.latest.hidden = atBottom(ui.history);
+    }
+    function applyState(incoming, controls = false) {
+      if (!incoming || typeof incoming.session_id !== "string" || typeof incoming.context_text !== "string") throw new Error("The server returned an incomplete conversation. Reconnecting…");
+      if (!helpers.acceptsState(state, incoming)) return;
+      state = incoming; sessionId = incoming.session_id; save("session", sessionId);
+      if (helpers.pendingAccepted(pending, incoming)) acknowledgePending();
+      renderContext(incoming); renderHistory(incoming);
+      const tokens = Number.isFinite(incoming.context_tokens) ? incoming.context_tokens : 0;
+      ui["token-count"].textContent = `${tokens.toLocaleString()} / 1,024 tokens`;
+      ui["token-meter"].setAttribute("aria-valuenow", String(tokens));
+      ui["token-meter"].setAttribute("aria-valuetext", `${tokens} context tokens, 120 reply tokens reserved, 1024 total`);
+      ui["token-used"].style.width = `${Math.max(0, Math.min(100, tokens / 1024 * 100))}%`;
+      ui["token-reserve"].style.width = `${Math.max(0, Math.min(120, 1024 - tokens) / 1024 * 100)}%`;
+      ui.budget.textContent = helpers.budgetText(incoming.budget);
+      ui.budget.title = helpers.budgetTooltip(incoming.budget);
+      if (controls && incoming.settings) ui.temperature.value = String(incoming.settings.temperature);
+      refreshControls(); refreshNotice();
+    }
+    function acknowledgePending() {
+      if (pending && ui.message.value === pending.message) ui.message.value = "";
+      pending = null; save("pending", null); actionError = "";
+    }
+    function schedule() {
+      clearTimeout(timer);
+      if (!stopped && sessionId) timer = setTimeout(poll, helpers.pollDelay(state, failures));
+    }
+    async function poll() {
+      if (stopped || !sessionId) return;
+      const seq = ++pollSequence, epoch = sessionEpoch, id = sessionId;
+      try {
+        const incoming = await request(endpoint("", id));
+        if (epoch !== sessionEpoch || id !== sessionId || seq !== pollSequence) return;
+        connectionError = ""; failures = 0; applyState(incoming);
+      } catch (error) {
+        if (epoch !== sessionEpoch || id !== sessionId || seq !== pollSequence) return;
+        connectionError = error.status === 404 || error.status === 403 ? "This saved chat is unavailable to this browser. You can explicitly start a new chat, or reconnect to try again." : error.message;
+        failures++; refreshNotice();
+      } finally { if (epoch === sessionEpoch && seq === pollSequence) schedule(); }
+    }
+    async function presence(connected) {
+      if (!sessionId || stopped && connected) return;
+      try { await fetch(new URL(endpoint("/presence"), base), {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({connected}), keepalive: true}); } catch (_) { /* State polling reports connectivity. */ }
+    }
+    async function createSession() {
+      if (mutation) return;
+      mutation = true; clearTimeout(timer); refreshControls(); actionError = "";
+      const oldId = sessionId;
+      try {
+        const incoming = await request("sessions", {example_rounds: Number(ui["example-rounds"].value)});
+        if (oldId) await presence(false);
+        sessionEpoch++; pollSequence++; state = null; historySignature = ""; lastContext = null;
+        pending = null; save("pending", null); ui.message.value = ""; connectionError = ""; failures = 0;
+        applyState(incoming, true); ui["new-details"].open = false; await presence(true); ui.message.focus();
+      } catch (error) { actionError = error.message; refreshNotice(); }
+      finally { mutation = false; refreshControls(); schedule(); }
+    }
+    async function sendMessage(retry = false) {
+      if (mutation || !state || helpers.isBusy(state) || pending && !retry) return;
+      if (!retry) {
+        const message = ui.message.value;
+        if (!message.trim()) { ui.message.focus(); return; }
+        pending = {session_id: sessionId, message, target: ui.target.value, request_id: crypto.randomUUID()}; save("pending", pending);
+      }
+      if (!pending || pending.session_id !== sessionId) return;
+      mutation = true; actionError = ""; refreshControls(); refreshNotice();
+      const submission = pending, epoch = sessionEpoch;
+      try {
+        const incoming = await request(endpoint("/message"), {message: submission.message, target: submission.target, request_id: submission.request_id});
+        if (epoch !== sessionEpoch) return;
+        applyState(incoming); acknowledgePending(); connectionError = ""; failures = 0;
+      } catch (error) {
+        if (epoch !== sessionEpoch) return;
+        if (error.accepted === false || error.status >= 400 && error.status < 500) { pending = null; save("pending", null); }
+        actionError = error.message + (pending ? " Its delivery is unconfirmed. Reconnecting checks the saved history; retry uses the same request ID." : " Your draft is preserved.");
+      } finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
+    }
+    async function changeControl(path, body) {
+      if (mutation || !state) return;
+      mutation = true; actionError = ""; refreshControls();
+      try { applyState(await request(endpoint(path), body), path === "/settings"); if (path === "/settings") ui["settings-details"].open = false; }
+      catch (error) { actionError = error.message; }
+      finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
+    }
+    async function exportChat() {
+      if (!state) return;
+      ui.export.disabled = true;
+      try {
+        const archive = await request(endpoint("/export"));
+        const blob = new Blob([JSON.stringify(archive, null, 2) + "\n"], {type: "application/json"});
+        const url = URL.createObjectURL(blob), link = document.createElement("a");
+        link.href = url; link.download = `gpt2-codex-${sessionId}-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { actionError = error.message; refreshNotice(); }
+      finally { refreshControls(); }
+    }
+    ui.composer.addEventListener("submit", event => { event.preventDefault(); sendMessage(); });
+    ui.message.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!ui.send.disabled) sendMessage(); } });
+    ui["new-chat"].addEventListener("click", createSession);
+    ui.pause.addEventListener("click", () => changeControl("/control", {paused: !state.paused}));
+    ui["save-settings"].addEventListener("click", () => {
+      try { changeControl("/settings", {temperature: helpers.validateTemperature(ui.temperature.value), max_new_tokens: 120}); }
+      catch (error) { actionError = error.message; refreshNotice(); ui.temperature.focus(); }
+    });
+    ui.export.addEventListener("click", exportChat);
+    ui["retry-message"].addEventListener("click", () => sendMessage(true));
+    ui.reconnect.addEventListener("click", () => { clearTimeout(timer); failures = 0; sessionId ? poll() : createSession(); });
+    ui.latest.addEventListener("click", jumpLatest);
+    ui.history.addEventListener("scroll", () => { ui.latest.hidden = atBottom(ui.history); });
+    window.addEventListener("pagehide", () => {
+      stopped = true; clearTimeout(timer); clearInterval(presenceTimer);
+      if (sessionId) {
+        const url = new URL(endpoint("/presence"), base);
+        const body = JSON.stringify({connected: false});
+        if (!navigator.sendBeacon || !navigator.sendBeacon(url, new Blob([body], {type: "application/json"}))) presence(false);
+      }
+    });
+    window.addEventListener("pageshow", event => { if (event.persisted) { stopped = false; presenceTimer = setInterval(() => presence(true), 15000); presence(true); poll(); } });
+    let presenceTimer = setInterval(() => presence(true), 15000);
+    async function boot() {
+      if (pending && pending.session_id === sessionId) { ui.message.value = pending.message; ui.target.value = pending.target; }
+      else { pending = null; save("pending", null); }
+      refreshControls(); refreshNotice();
+      if (sessionId) { await poll(); if (state) { ui.temperature.value = String((state.settings && state.settings.temperature) ?? .8); await presence(true); } }
+      else await createSession();
+    }
+    boot();
+  </script>
+</body>
+</html>

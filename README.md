@@ -63,6 +63,14 @@ gpt2-xl "Reversible computing is" --max-new-tokens 60 --seed 42
 gpt2-xl                         # interactive mode
 ```
 
+## GPT-2 and Codex beta
+
+The `codex/gpt2-codex` branch adds a three-participant chat with Human, GPT-2,
+and Codex. It displays GPT-2's complete rolling context alongside a longer
+private history, while Codex can run background tools and invite GPT-2 to
+respond. See [the beta guide](docs/CODEX-CHAT.md) for behavior, deployment,
+isolation, and the configurable daily API allowance.
+
 ## Public anonymous chat
 
 The public beta is available at

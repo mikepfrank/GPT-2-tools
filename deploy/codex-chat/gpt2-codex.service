@@ -1,0 +1,28 @@
+[Unit]
+Description=GPT-2 and Codex closed-beta chat
+After=network-online.target docker.service gpt2-codex-network.service
+Wants=network-online.target
+Requires=docker.service gpt2-codex-network.service
+
+[Service]
+Type=simple
+User=gpt-2
+Group=gpt-2
+WorkingDirectory=/home/gpt-2/GPT-2-codex
+EnvironmentFile=/etc/gpt2-codex.env
+# The trusted main process loads the operator credential. The bridge explicitly
+# strips credentials before launching any model-controlled background process.
+ExecStart=/bin/bash -lc 'exec /home/gpt-2/.venvs/gpt2-public/bin/python -m gpt2_local.codex_chat --host 127.0.0.1 --port 8900 --origin "$GPT2_CODEX_ORIGIN" --base-path "$GPT2_CODEX_BASE_PATH" --data-dir /home/gpt-2/.local/share/gpt2-codex --launcher "$GPT2_CODEX_LAUNCHER" --gateway-host 172.30.97.1 --gateway-port 8902 --daily-limit-usd "$GPT2_CODEX_DAILY_LIMIT_USD" --offline --threads 1'
+Restart=on-failure
+RestartSec=5
+ExecStopPost=+/usr/local/libexec/gpt2-codex-cleanup
+TimeoutStopSec=25
+KillMode=control-group
+UMask=0077
+CPUQuota=100%
+MemoryHigh=8704M
+MemoryMax=9G
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

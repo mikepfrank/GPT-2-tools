@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-04 UTC**
+Last updated: **2026-10-06 UTC**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -41,6 +41,29 @@ as `./chat.ps1 -Offline -Port 8899`. Select the new checkout's source through
 `PYTHONPATH`, as the chat launcher does, and keep the shared WSL editable
 installation unchanged. Dependency/backend experiments should use a separate
 environment. Git worktrees do not copy ignored local transcripts or caches.
+
+## GPT-2 and Codex conversation lab
+
+The three-participant application is developed separately on
+`codex/gpt2-codex` in `.worktrees/gpt2-codex`, based on streaming tip `c9dbe09`.
+It adds server-owned private transcripts, independent persistent Codex threads,
+Human recipient selection, bounded autonomous turns, and a separate resident
+original GPT-2 XL FP32 runner. The new runner can share read-only checkpoint
+pages through the existing cache while retaining its own decoding state.
+Keep the public GPT-2 and chess services available and preserve their settings.
+
+[`docs/CODEX-CHAT.md`](docs/CODEX-CHAT.md) documents behavior, private state,
+the isolated CLI 0.154.0 launcher and scoped API gateway, configurable default
+$10 UTC daily conservative admission allowance, and deployment boundaries.
+Do not publish the beta's opaque path, owner cookies, API key, or private
+chat/Codex/ledger data. The final Linux suite completed 338 Python tests with
+one existing skip, and 48 Node tests passed; the subsequently updated web
+module passed its 17-test targeted suite. Live Sol greeting, GPT-2-first
+follow-up, native Python/web/child workflow, pause cancellation, confinement,
+private HTTPS, browser persistence, and fresh-chat checks pass. Existing
+service PIDs and the original Caddy configuration prefix remain unchanged.
+See `VERIFICATION.md` for memory/budget snapshots and remaining cold-start,
+reboot, load, and live rollback limits.
 
 ## Public-service development
 

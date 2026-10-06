@@ -1464,3 +1464,164 @@ Production is ready for the owner's fresh browser test after refreshing
 `https://gpt2-chat.com/`. Operator instructions and two-step polling rollback
 are in `docs/SEED-UPDATE.md`. Reboot/autostart behavior and live rollback were
 not retested; existing enabled state and guarded fixture paths were verified.
+
+## GPT-2 and Codex beta: initial live checks, October 5 CDT / October 6 UTC
+
+This application is developed in `.worktrees/gpt2-codex` on
+`codex/gpt2-codex`, based on `c9dbe09`. Its operator deployment uses a separate
+source checkout and `gpt2-codex.service`. The existing public GPT-2 and chess
+applications remain separate. Behavior, storage, budget, and deployment
+instructions are in [`docs/CODEX-CHAT.md`](docs/CODEX-CHAT.md).
+
+The initial Linux Python suite passed **324 tests**, and the Node frontend
+suite passed **48 tests**. These results preceded subsequent native bridge,
+seccomp, and child-workflow corrections; the final complete-suite rerun should
+be recorded separately. A Linux-only regression now exercises the sandbox
+launcher's actual asynchronous stdin redirection with a harmless reader.
+Model-free suites cover context accounting, streaming boundaries, gateway
+admission and isolation, transport fixtures, durable requests/history, recipient
+order, cancellation, idle scheduling, and loopback HTTP ownership/origin checks.
+
+### Live application and native sandbox checks
+
+The implementing session observed a real `gpt-6.1-sol` greeting entering the
+chat through `emit_message`. A separate Human message explicitly addressed to
+GPT-2 produced a GPT-2 reply first, followed by Codex. These checks exercised
+the trusted backend, scoped API gateway, app-server dynamic tools, original
+resident GPT-2 runner, message ordering, and private transcript persistence.
+They initially exercised the private backend. HTTPS/browser acceptance and
+the child workflow subsequently passed, as recorded below.
+
+Native code execution was then exercised through Codex's workspace-write
+sandbox inside the isolated Docker container. Offline Python returned **385**.
+The container retained its dropped host capabilities, read-only root,
+`no-new-privileges`, restricted mounts, and bounded resources. Enabling this
+nested sandbox required the custom seccomp profile described below.
+
+The following sampled live confinement checks passed:
+
+| Probe from the sandbox/container | Observation |
+| --- | --- |
+| Host profile and other Astra account directories | Not visible |
+| Host SSH port 22 | Blocked |
+| Existing GPT-2 backend port 8899 | Blocked |
+| External `1.1.1.1:443` | Unreachable |
+| Scoped gateway without a token | HTTP 401 |
+
+These probes verify those particular paths and destinations; they are not an
+exhaustive audit of every syscall, route, DNS response, or application behavior.
+The original service processes remained unchanged during these checks:
+
+| Existing service | Main PID |
+| --- | ---: |
+| Public GPT-2 | 91398 |
+| Astra Chess | 4149 |
+| Arcturus Chess | 4313 |
+| Caddy | 4341 |
+
+### Native bridge corrections
+
+The root-owned launcher now explicitly preserves stdin with `<&0` when its
+timeout/Docker invocation runs asynchronously. Without this redirect, Bash's
+background-job behavior deprived the stdio app-server of its JSON-RPC input.
+Bridge teardown closes stdin before attempting process-group termination;
+the privileged launcher also owns its independent timeout/container cleanup.
+
+The bridge verifies effective model/provider settings, private Codex home,
+disabled ambient capabilities, workspace roots, network-disabled shell
+permissions, and thread sandbox policy before starting a turn. It explicitly
+supplies workspace-write permission policy for native code execution, handles
+the CLI's scoped current-time request, and keeps dynamic application tools in
+the parent thread. A source correction now tolerates private child-thread
+notifications and rejects child attempts to invoke public chat tools.
+That child-workflow correction subsequently passed an end-to-end live check.
+
+The custom `deploy/codex-chat/seccomp.json` derives from
+[Moby v25.0.13's default profile](https://github.com/moby/moby/blob/v25.0.13/profiles/seccomp/default.json).
+It retains the baseline rules and adds an allow entry for eight namespace/mount
+syscalls: `clone`, `unshare`, `mount`, `umount`, `umount2`, `pivot_root`, `setns`,
+and `sethostname`. This permits unprivileged Bubblewrap user namespaces inside
+the container; no host capability is granted. The **modified application
+profile's** SHA-256 at
+this checkpoint is
+`2731edb3cd1cba35a8a374540ba2114d1cd5f25678485aa6ecd19cbf0eaa7ae2`.
+The pinned Apache 2.0 license and upstream notice are retained beside it; see
+[`THIRD-PARTY-NOTICES.md`](deploy/codex-chat/THIRD-PARTY-NOTICES.md).
+
+### Memory and admission snapshot
+
+After the short GPT-2 generation, host available memory was **12,597 MiB**.
+Both GPT-2 processes reported approximately **5.90 GiB of shared-clean pages
+each**. PSS was approximately **3.87 GiB** for the existing public GPT-2
+process and **3.45 GiB** for the beta. The raw `smaps_rollup` values were:
+
+| Process | `Shared_Clean` | `Pss` |
+| --- | ---: | ---: |
+| Existing public GPT-2 | 6,187,352 kB | 4,058,778 kB |
+| Beta GPT-2 | 6,189,828 kB | 3,616,864 kB |
+
+Linux reports these `kB` units as 1,024 bytes. The shared-clean readings overlap and
+must not be added as two unique checkpoint copies. PSS reflects proportional
+sharing at this instant; each process retains separate decoding/intermediate
+allocations. Available-memory accounting also treats reclaimable file pages
+differently from private anonymous allocations.
+
+The durable daily ledger at this checkpoint showed **$2.658415 admitted from
+the $10 UTC allowance**, and a **$0.319115 reported-usage estimate**. These
+figures preceded further live checks. The admitted amount is the conservative,
+nonrefundable local reservation total, while reported usage is a separate
+estimate; neither number is a provider invoice or an account-wide spending cap.
+
+### Final child workflow, cancellation, and HTTPS acceptance
+
+The final complete Linux suite completed **338 Python tests successfully,
+with one existing skipped test**, and all **48 Node frontend tests** passed.
+Four additional web regressions were added afterward; the updated targeted
+web suite then passed **17 tests**. A 342-test full-suite run is not claimed.
+A live parent Codex workflow executed offline Python and obtained **385**,
+read the public Example Domain page through the bounded web tool, and obtained
+**56** from a private child agent. The child's private events and result did
+not bypass the parent's public-message interface. A pause interrupted active
+work and cleaned up the sandbox container in one observed **0.56-second**
+interval; no stale public message was committed.
+
+The secret-path HTTPS site was published with the capability excluded from
+source/documentation. The bare origin returned **404**, and the private page
+and health endpoint returned **200**. All **four** checked existing HTTPS
+routes returned **200**. The four original service PIDs listed above remained
+unchanged. The original Caddy bytes remain an exact prefix of the amended
+configuration; the preserved prefix SHA-256 is
+`003c9b072341c7ccd565d7eb1d94a9f86c60e90923e3d1b700c82cbba944c98f`.
+
+The HTTPS browser passed paused Enter behavior, pause/resume, reload
+persistence, and creation of a fresh chat. The isolated runtime image's
+recorded SHA-256 is
+`9d9274de90e73ba2e215935f0dfbd09eb5c2fe248ba7a6b3052e45969de496fb`.
+
+Both GPT-2 processes mapped the same checkpoint blob on device **103:01**,
+inode **93165375**, size **6,133.87 MiB**. These matching mappings and the
+shared-clean measurements confirm checkpoint sharing. The weight mappings
+are `rw-p` private copy-on-write mappings; inference left their shared weight
+pages clean rather than creating an independent private checkpoint copy.
+KV caches and intermediate allocations still belong to their own process.
+
+The later ledger snapshot recorded **$8.317800 admitted from $10**,
+**$1.083945 reported-usage estimate**, and **one request with unknown usage**
+after interruption. Reservations remained charged. Further activity can
+change these numbers; they are not a provider invoice.
+
+The initial Google search response was a stub without useful results.
+The final credential-free Bing RSS replacement produced useful IANA and
+RFC 2606 result URLs in a **0.28-second** live request; a subsequent IANA page
+read also passed. The updated web module was deployed by restarting only the
+beta service. This establishes useful search and page retrieval for those
+queries, not every provider response or future search.
+
+### Remaining verification
+
+The short backend/model and confinement checks do not establish combined
+cold-start capacity, near-full-context memory under concurrent service load,
+sustained throughput, reboot/autostart recovery, or a live rollback. Additional
+results and completion evidence should be appended when those checks
+finish. The beta capability path, owner cookies, credentials, private Codex
+state, and detailed chat evidence remain outside public source/documentation.

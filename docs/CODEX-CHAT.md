@@ -1,0 +1,279 @@
+# GPT-2 and Codex conversation lab
+
+This application adds Codex as a third participant beside a Human and the
+original GPT-2 XL. Development lives on `codex/gpt2-codex` in
+`.worktrees/gpt2-codex`, based on streaming branch revision `c9dbe09`.
+The separate beta uses its own source checkout, service, browser origin,
+conversation database, Codex workspaces, and API admission ledger.
+
+## Conversation behavior
+
+The chat contains any sequence of `Human>`, `GPT-2>`, and `Codex>` messages.
+Each message begins with two newlines, its speaker marker, and space-prefixed
+content. GPT-2 sees the exact retained context displayed in the browser:
+the fixed introductory header and a suffix of conversation messages.
+Packing counts the complete prompt with the real GPT-2 tokenizer, preserves
+the latest message, and reserves **120 output tokens** within its 1,024-token
+window. Older messages remain in private history after they leave that window.
+An omission hint is included in the token budget.
+
+New chats offer zero, one, or two example rounds; one is the default. The
+header retains the original model's identity and date and introduces Codex
+as a modern participant with tools. A GPT-2 turn appends only the `GPT-2>`
+generation cue to the current context; it need not follow a Human message.
+The original checkpoint, tokenizer, FP32 computation, and sampling settings
+remain in use. A generated speaker delimiter ends the reply, and streaming
+withholds incomplete Unicode and speaker-marker prefixes. Committed replies
+also discard a terminal incomplete delimiter candidate.
+
+The composer offers **Auto**, **Codex**, and **GPT-2** recipients. Auto lets
+Codex assess the Human's intent. An explicit Codex recipient requires Codex
+to contribute first; an explicit GPT-2 recipient requires a GPT-2 query first.
+Codex may then respond, query GPT-2 again, or wait. Each visible Codex
+contribution is one paragraph of at most 100 words and 700 characters.
+An action permits at most three visible contributions and two GPT-2 queries.
+Codex reasoning, tool output, and raw final answers stay outside the chat;
+`emit_message` is the only route for a visible Codex message.
+
+After a completed Human action, connected chats can receive autonomous
+contributions after 60, 120, and 240 seconds. The allowance is cumulative:
+at most three autonomous visible messages are permitted before another Human
+message or a manual resume. An idle action with no visible contribution also
+uses one allowance. `wait_for_human` ends this allowance immediately.
+Examples alone cannot start autonomous work.
+
+Pause and loss of browser presence suspend autonomous work. The browser sends
+a presence pulse every 15 seconds; its lease lasts 45 seconds. A new Human
+message interrupts the active action. Epoch checks prevent canceled Codex
+tools or provisional GPT-2 output from committing into the newer turn.
+Enter sends; Shift+Enter inserts a newline. GPT-2 progress is displayed from
+the session's cumulative state while generation is in progress.
+
+## Components and isolation
+
+```mermaid
+flowchart LR
+    Browser[Browser with owner cookie] --> Caddy[Caddy: private beta origin and opaque path]
+    Caddy --> Server[Trusted chat service on loopback 8900]
+    Server --> History[(Private chat database)]
+    Server --> GPT2[Independent resident GPT-2 XL FP32]
+    Server --> Container[Per-chat isolated Codex app-server]
+    Container --> Gateway[Scoped API gateway on private bridge port 8902]
+    Gateway --> Ledger[(Durable UTC admission ledger)]
+    Gateway --> API[OpenAI Responses API]
+```
+
+The trusted service runs as `gpt-2`. It owns one serialized chat worker and
+one resident GPT-2 runner. This runner is independent of the public
+`gpt2-public` process and does not submit work through the public service's
+queue. The deployment uses one Torch thread and shares the existing
+Hugging Face cache at `/home/gpt-2/.cache/gpt2-public/huggingface`.
+
+Using the same checkpoint file allows the kernel to share read-only mapped
+checkpoint pages between the two GPT-2 processes. Each process still has
+its own Python objects, decoding state, KV cache, and intermediate tensors.
+RSS and cgroup accounting can count these shared pages differently; a small
+cgroup reading does not measure the complete model footprint. Combined
+capacity must be checked on the running host, especially for cold starts
+and near-full prompts. The installer requires at least 8 GiB of available
+memory before starting the new service.
+
+Codex uses the separately pinned **CLI 0.154.0**, `gpt-6.1-sol`, and medium
+reasoning effort. A Codex app-server process is launched for each action and
+resumes that chat's saved thread. Its persistent Codex home and workspace
+are mounted only into that chat's container. The service account receives
+permission to invoke a constrained root-owned launcher and is not granted
+general Docker access.
+
+The container has a read-only root filesystem, dropped capabilities,
+`no-new-privileges`, a 768 MiB memory limit with no additional swap allowance,
+one CPU, a 96-process limit, and a 128 MiB temporary filesystem. The launcher
+enforces a 190-second lifetime; the bridge's action deadline is 180 seconds.
+Cleanup removes only containers carrying this application's sandbox label.
+The custom seccomp profile retains Moby v25.0.13's default rules and adds eight
+namespace/mount syscalls for unprivileged nested Bubblewrap. It grants no host
+capability. The source attribution, modification notice, and complete pinned
+Apache 2.0 license/notice are in
+[`deploy/codex-chat/THIRD-PARTY-NOTICES.md`](../deploy/codex-chat/THIRD-PARTY-NOTICES.md).
+The launcher's asynchronous Docker command must retain its explicit `<&0`
+redirect: Codex app-server receives JSON-RPC on stdin, and Bash otherwise
+redirects an asynchronous command's stdin away from the parent pipe.
+
+The private Docker network disables container-to-container communication.
+Its host input rules permit only the API gateway on port 8902. The real
+OpenAI key stays in the trusted service; containers receive an expiring,
+revocable token scoped to their action. Parent and subagent API requests use
+the same gateway and ledger. Provider-hosted tools, provider-side conversation
+storage, alternate models, and alternate API routes are rejected. Shell
+execution and subagents operate inside the isolated workspace. Public web
+research uses bounded host tools that validate addresses and redirects.
+
+## Private state and access
+
+The beta origin serves only a randomly generated opaque path. That path is
+an access capability: keep it out of source control, public documentation,
+analytics, screenshots intended for sharing, and access logs. This document
+deliberately does not contain its value.
+
+A browser owner cookie provides additional conversation isolation. It is
+`HttpOnly`, `SameSite=Strict`, path-scoped, and `Secure` when HTTPS is configured.
+Requests that mutate chats must supply the configured origin. Knowing a chat
+identifier without its owner cookie does not permit reading or changing it.
+The opaque beta URL is still necessary for creating a new browser-owned chat;
+this beta does not offer account login or a public chat directory.
+
+The default private data directory is
+`/home/gpt-2/.local/share/gpt2-codex`:
+
+| Location | Contents |
+| --- | --- |
+| `chats.sqlite3` | Full transcripts, settings, message metadata, request identifiers, and conversation positions |
+| `budget.sqlite3` | Durable API reservations and reported numeric usage |
+| `agents/players/<session>/codex-home` | Private Codex thread and configuration state |
+| `agents/players/<session>/workspace` | That chat's private code-execution files |
+
+Human request identifiers are persisted before work is queued. Retrying a
+receipt with the same identifier does not append another Human message.
+An accepted pending Human action can be recovered after restart and browser
+reconnection; a completed request retry does not schedule another action.
+Each chat resumes its own Codex thread and retains its full transcript.
+The browser displays at most the latest 1,000 history messages; exports retain
+the complete private transcript, up to the service's 10,000-message limit.
+At most 64 chats are accepted by this beta.
+
+GPT-2 generation records retain the exact prompt, input and output token IDs,
+effective settings, actual/requested seed, raw decoded result, stop reason,
+timings, context position, and runtime/checkpoint provenance. Without an
+explicit seed, the adapter records a fresh entropy-derived seed. Provisional
+stream text is never committed or exported as a completed reply. The export
+format is `gpt2-codex-chat`, version 1; the earlier two-party public-chat
+archive is a separate format.
+
+Back up private chat, ledger, and Codex state using consistent SQLite backups
+and private filesystem storage. Do not commit these files or use an old
+budget database to reset a quota. Pause affected chats and let active work
+finish before an operator restart when practical.
+
+## Daily API admission allowance
+
+The default allowance is **$10 per UTC day**, shared by every chat and all
+parent/subagent calls in this application. Configure it with
+`--daily-limit-usd` or the deployed `GPT2_CODEX_DAILY_LIMIT_USD` environment
+setting. The setting must be positive and finite.
+
+This is conservative local admission control. Before forwarding a request,
+the gateway durably reserves an amount based on the normalized request's
+UTF-8 byte length, 20,000 additional input-token units, and its output
+allowance. The ledger's implemented reservation rates are $5 per million
+input units and $15 per million output tokens. Requests are limited to
+750,000 bytes and at most 4,096 output tokens. Reservations are never
+refunded, including after cancellation, an upstream error, a network failure,
+or a crash. Reported usage is recorded separately and does not release a
+reservation. The browser shows admitted and remaining allowance.
+
+These reservations deliberately overestimate ordinary use. They are not an
+invoice calculation or an OpenAI account-wide spending cap; other services
+using the operator's key have their own accounting. Review the ledger's rates
+against provider pricing before changing models, request limits, or pricing
+assumptions. The model and standard service tier are enforced by the gateway.
+
+## Deployment and operation
+
+Deployment templates live in [`deploy/codex-chat`](../deploy/codex-chat).
+The intended host layout is:
+
+| Resource | Selection |
+| --- | --- |
+| Source checkout | `/home/gpt-2/GPT-2-codex` |
+| Python environment | `/home/gpt-2/.venvs/gpt2-public` selected with this checkout's `PYTHONPATH` |
+| Service | `gpt2-codex.service`, loopback port 8900 |
+| Network unit | `gpt2-codex-network.service` |
+| Operator environment | Root-owned `/etc/gpt2-codex.env`, mode 0600 |
+| Operator records/backups | Root-owned `/var/lib/gpt2-codex-ops` |
+| Sandbox image | `gpt2-codex-runtime:0.154.0` |
+
+The environment records the public origin, opaque base path, trusted launcher
+argument array, cache/source selection, timezone, and daily allowance. The
+operator supplies the API credential to the trusted service environment;
+never put it in a Git file or a sandbox argument. CLI launches require an
+explicit isolation launcher; a bare Codex command is rejected.
+
+The installer assumes the host's existing `gpt-2` UID/GID of 1015/1018,
+the private `172.30.97.0/24` network, and the existing Caddy layout. Recheck
+those prerequisites, available memory, image availability, and existing
+service health before installation. The systemd template gives the chat
+process one CPU, `MemoryHigh=8704M`, `MemoryMax=9G`, and `TasksMax=128`.
+Container resources are additional Docker-managed allocations.
+
+The operator sequence is to build the pinned sandbox image, install the
+separate service/network/launcher, confirm private health and confinement,
+exercise real Codex and GPT-2 turns, and then publish the beta origin.
+`install.py --install` installs the new units; `--publish` appends only the
+new beta site after private health succeeds. `smoke.py` uses a root-private
+owner cookie/session and saves its transcript under the operator directory.
+Smoke tests can spend API allowance and run GPT-2 inference.
+
+Shared Caddy updates must hold `/run/lock/astra-caddy-config.lock`, preserve
+the original site's bytes and configuration inode, validate the candidate,
+write/fsync in place when the file is bind-mounted, signal the existing
+process with SIGUSR1, and poll HTTPS readiness. A rollback also needs an
+HTTPS readiness check. Preserve the public GPT-2 service, both chess
+services, their environments, and their existing PIDs during this work.
+Do not treat the new unit being active as proof of a working HTTPS route.
+
+The API is rooted beneath the opaque base path:
+
+| Method and suffix | Purpose |
+| --- | --- |
+| `POST /api/sessions` | Create a chat and owner cookie |
+| `GET /api/sessions/<id>` | Read committed state and provisional progress |
+| `POST /api/sessions/<id>/message` | Accept a Human message, target, and durable request ID |
+| `POST /api/sessions/<id>/presence` | Refresh or end browser presence |
+| `POST /api/sessions/<id>/control` | Pause or resume |
+| `POST /api/sessions/<id>/settings` | Set temperature; the reply cap remains 120 tokens |
+| `GET /api/sessions/<id>/export` | Export private history and generation evidence |
+| `GET /health` | Read application health without generation |
+
+## Verification boundary
+
+At the final October 5, 2026 CDT / October 6 UTC checkpoint, the Linux suite
+completed **338 Python tests successfully, with one existing skipped test**,
+and **48 Node frontend tests** passed. After four additional web regressions,
+the updated targeted web suite separately passed **17 tests**.
+Coverage includes exact context packing, delimiter-safe streaming, durable
+admission accounting, scoped gateway validation, simulated app-server
+interaction, private-history restoration, recipient routing, request
+idempotency, cancellation, presence scheduling, and loopback HTTP ownership
+and origin checks.
+
+Live checks passed a real Sol greeting and a GPT-2-first turn followed by Codex.
+A background workflow executed offline Python (`385`), read Example Domain,
+and received a private child-agent result (`56`). Native workspace-write and
+child notification handling therefore passed real transport checks. A pause
+canceled an active workflow and cleaned up its container in one observed
+0.56-second interval without committing a stale public message.
+Container checks found other host account directories invisible,
+host ports 22/8899 blocked, external `1.1.1.1:443` unreachable, and an
+unauthenticated gateway request rejected with HTTP 401.
+The credential-free Bing RSS search returned useful IANA/RFC 2606 results,
+and an IANA page read passed after the final web-module update.
+
+After GPT-2 generation, the host reported 12,597 MiB available memory. Both
+GPT-2 processes reported approximately 5.90 GiB of shared-clean pages each;
+their PSS was approximately 3.87 GiB for the existing public process and
+3.45 GiB for the beta. Both mapped the same checkpoint device/inode, confirming
+shared checkpoint pages. Existing GPT-2/chess/Caddy PIDs remained unchanged.
+These are short-run observations, not cold-start or sustained-capacity tests.
+
+The private HTTPS site is published. The bare origin returned 404; its private
+capability page and health returned 200. All four checked existing HTTPS
+routes remained healthy. Browser checks passed pause/Enter behavior, reload
+persistence, and creation of a fresh chat. The private capability remains
+excluded from source and this document.
+
+The final recorded ledger snapshot admitted $8.317800 of the $10 allowance;
+its reported-usage estimate was $1.083945 with one interrupted request's usage
+unknown. Reboot recovery, cold-start/load capacity, and live rollback have not
+been established. The measured snapshots and native bridge corrections are
+recorded in
+[`VERIFICATION.md`](../VERIFICATION.md).

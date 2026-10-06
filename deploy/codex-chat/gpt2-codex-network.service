@@ -1,0 +1,13 @@
+[Unit]
+Description=Private network for GPT-2 Codex sandboxes
+After=docker.service
+Requires=docker.service
+Before=gpt2-codex.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/gpt2-codex-network
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
