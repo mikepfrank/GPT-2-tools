@@ -37,7 +37,7 @@ test("new chats are unseeded by default and each creation reads the visible exam
   const calls = [];
   const ui = {"include-example": {checked: false}, message: {value: "", focus() {}}};
   const creator = vm.createContext({ui, clearTimeout() {}, refreshControls() {}, refreshNotice() {},
-    save() {}, schedule() {}, applyState() {}, presence: async () => {},
+    save() {}, schedule() {}, resetFiles() {}, applyState() {}, presence: async () => {},
     request: async (route, body) => { calls.push({route, body: plain(body)}); return {session_id: "new"}; }});
   vm.runInContext("let mutation=false,timer=null,actionError='',infoNotice='',sessionId=null,sessionEpoch=0,pollSequence=0,state=null,historySignature='',lastContext=null,pending=null,pendingContinue=null,connectionError='',failures=0;\n"+createSource, creator);
   await vm.runInContext("createSession()", creator);
@@ -143,6 +143,7 @@ function continuationClient(storage = new Map(), request = async () => { throw n
     localStorage: {getItem: name => storage.get(name) ?? null,
       setItem: (name, value) => storage.set(name, value), removeItem: name => storage.delete(name)},
     renderContext() {}, renderHistory() {}, schedule() {},
+    resetFiles() {},
     idleIndicator: helpers.createIdleWait({now: () => 0, setInterval: () => 1, clearInterval() {}, announce() {},
       render: frame => { ui["idle-wait"].hidden = !frame.visible; ui["wait-rest"].hidden = !frame.waitingForHuman; }}),
     generationIndicator: helpers.createGenerationActivity({announce() {},
@@ -458,11 +459,11 @@ test("GPT-2 activity hides for stale, paused, failed and disconnected work and s
 
 function realBrowserClient(initial, reducedMotion = false) {
   const nodes = new Map(), listeners = new Map(), storage = new Map(), requests = [], createdElements = [];
-  const timers = new Map(); let serial = 0, incoming = initial, fail = false, responseError = null;
+  const timers = new Map(); let serial = 0, incoming = initial, fail = false, responseError = null, filesResponse = null;
   function node() {
     const classes = new Set(), events = new Map(), attributes = new Map();
     let text = "";
-    return {hidden: false, disabled: false, value: "", checked: false, files: [], clicks: 0, style: {}, children: [], textWrites: 0,
+    return {hidden: false, disabled: false, open: false, value: "", checked: false, files: [], clicks: 0, focusCalls: 0, style: {}, children: [], textWrites: 0,
       scrollTop: 0, scrollHeight: 1200, clientHeight: 300,
       get textContent() { return text; }, set textContent(value) { text = value; this.textWrites++; },
       classList: {toggle(name, on) { if (on) classes.add(name); else classes.delete(name); }, contains: name => classes.has(name)},
@@ -470,7 +471,8 @@ function realBrowserClient(initial, reducedMotion = false) {
       appendChild(child) { child.parentNode = this; this.children.push(child); }, append(...children) { for (const child of children) this.appendChild(child); },
       replaceChildren(...children) { this.children = children; }, addEventListener: (name, callback) => events.set(name, callback),
       remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; this.removed = true; },
-      focus() {}, click() { this.clicks++; this.clickedWhileAttached = Boolean(this.parentNode); }, events};
+      showModal() { this.open = true; }, close() { this.open = false; events.get("close")?.({}); },
+      focus() { this.focusCalls++; }, click() { this.clicks++; this.clickedWhileAttached = Boolean(this.parentNode); }, events};
   }
   for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const element = node(); element.hidden = /\bhidden\b/.test(match[0]); nodes.set(match[1], element);
@@ -479,7 +481,7 @@ function realBrowserClient(initial, reducedMotion = false) {
   const body = node();
   storage.set(helpers.storageKey(href) + ":session", initial.session_id);
   const timer = callback => { const id = ++serial; timers.set(id, callback); return id; };
-  const client = vm.createContext({URL, Blob, console, location: {href}, performance: {now: () => 0},
+  const client = vm.createContext({URL, URLSearchParams, Blob, console, location: {href}, performance: {now: () => 0},
     crypto: {randomUUID: () => "request-for-browser-test"},
     document: {body, getElementById: id => nodes.get(id),
       createElement: tagName => { const element = node(); element.tagName = tagName; createdElements.push(element); return element; },
@@ -493,13 +495,17 @@ function realBrowserClient(initial, reducedMotion = false) {
       if (new URL(url).pathname.endsWith("/presence")) return {ok: true, json: async () => ({})};
       if (fail) throw new Error("Offline");
       if (responseError) return {ok: false, status: responseError.status, json: async () => ({error: responseError.message})};
+      if (new URL(url).pathname.endsWith("/files") && filesResponse) {
+        const response = filesResponse;
+        return {ok: true, json: async () => typeof response === "function" ? response(new URL(url)) : response};
+      }
       return {ok: true, json: async () => incoming};
     }});
   vm.runInContext(scripts[0], client);
   vm.runInContext(scripts[1].replace(/    boot\(\);\s*$/, "    globalThis.bootReady = boot();"), client);
   return {ui: Object.fromEntries(nodes), listeners, storage, requests, createdElements, body, ready: client.bootReady,
     run: code => vm.runInContext(code, client), receive: value => { incoming = value; }, disconnect: () => { fail = true; },
-    reject: (status, message) => { responseError = {status, message}; }};
+    reject: (status, message) => { responseError = {status, message}; }, receiveFiles: value => { filesResponse = value; }};
 }
 
 test("real browser scripts wire preparation, streamed text, timer Continue and waiting phases without touching draft or scroll", async () => {
@@ -733,6 +739,182 @@ test("imports cannot overlap active work, uncertain deliveries, a mutation or a 
     assert.equal(ui["import-file"].clicks, 0, condition);
     assert.equal(client.requests.filter(request => request.route.endsWith("/sessions/import")).length, 0, condition);
   }
+});
+
+test("workspace file sizes and native download URLs remain bounded to the private owner-scoped API", () => {
+  assert.equal(helpers.fileSize(0), "0 B");
+  assert.equal(helpers.fileSize(1024), "1 KiB");
+  assert.equal(helpers.fileSize(1024 ** 2), "1 MiB");
+  for (const invalid of [null, undefined, -1, Infinity, "4"]) assert.equal(helpers.fileSize(invalid), "—");
+  const path = "reports/résumé & <img>.txt";
+  const url = new URL(helpers.fileDownloadUrl("https://codex-test.gpt2-chat.com/closed-beta/api/", "chat", path));
+  assert.equal(url.pathname, "/closed-beta/api/sessions/chat/files/download");
+  assert.equal(url.searchParams.get("path"), path);
+  assert.equal([...url.searchParams.keys()].length, 1);
+  assert.equal(url.origin, "https://codex-test.gpt2-chat.com");
+});
+
+const fileChat = {...scheduledWait, revision: 1, context_text: "Chat context", status: "thinking",
+  messages: [{role: "Human", content: "Keep this chat running"}]};
+const workspaceEntry = (name, kind = "file", path = name, size = 4) => ({name, path, kind,
+  size: kind === "directory" ? null : size, modified: 1791234567});
+const workspaceListing = (entries = [], path = "", next_offset = null) => ({session_id: "chat", path,
+  parent: path ? path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "" : null, entries, next_offset});
+
+test("actual Files dialog lists safe names and native download links while active chat, draft and scroll stay intact", async () => {
+  const client = realBrowserClient(fileChat); await client.ready;
+  const unsafeName = 'résumé & <img src=x onerror="boom">.txt';
+  client.receiveFiles(workspaceListing([workspaceEntry("reports", "directory"), workspaceEntry(unsafeName), workspaceEntry("empty.bin", "file", "empty.bin", 0)]));
+  const ui = client.ui;
+  ui.message.value = "Unsent draft"; ui.target.value = "gpt2"; ui.context.scrollTop = 18; ui.history.scrollTop = 42;
+  assert.equal(ui.files.disabled, false, "browsing is available while Codex is working");
+  const priorRequests = client.requests.length;
+  const loading = ui.files.events.get("click")();
+  assert.equal(ui["files-dialog"].open, true);
+  assert.equal(ui["files-status"].textContent, "Loading workspace files…");
+  assert.equal(ui["files-refresh"].disabled, true);
+  await loading;
+  assert.equal(ui["files-list"].hidden, false);
+  assert.equal(ui["files-status"].textContent, "3 items in this page.");
+  assert.equal(ui["files-page"].textContent, "Showing 1–3");
+  assert.equal(ui["files-up"].disabled, true);
+  const links = client.createdElements.filter(element => element.className === "file-name file-download");
+  assert.equal(links.length, 2);
+  const unsafe = links.find(link => link.children[1].textContent === unsafeName);
+  assert.ok(unsafe, "filename markup remains literal text in a span");
+  assert.equal(unsafe.download, unsafeName);
+  assert.equal(new URL(unsafe.href).searchParams.get("path"), unsafeName);
+  assert.equal(new URL(unsafe.href).pathname, "/closed-beta/api/sessions/chat/files/download");
+  const beforeClick = client.requests.length;
+  unsafe.events.get("click")();
+  assert.equal(client.requests.length, beforeClick, "a native attachment link does not fetch its content in JavaScript");
+  assert.equal(ui["files-status"].textContent, "Download requested for " + unsafeName + ".");
+  await client.run("poll()");
+  assert.equal(ui["files-dialog"].open, true, "ordinary chat polling does not reset the file browser");
+  assert.equal(ui.message.value, "Unsent draft"); assert.equal(ui.target.value, "gpt2");
+  assert.equal(ui.context.scrollTop, 18); assert.equal(ui.history.scrollTop, 42);
+  assert.deepEqual(client.requests.slice(priorRequests).map(request => request.method), ["GET", "GET"]);
+  assert.equal(client.requests.slice(priorRequests).some(request => /\/(presence|control|message|continue)$/.test(request.route)), false);
+  const focusCalls = ui.files.focusCalls;
+  ui["files-close"].events.get("click")();
+  assert.equal(ui["files-dialog"].open, false);
+  assert.equal(ui.files.focusCalls, focusCalls + 1);
+  assert.equal(ui["files-list"].hidden, true);
+  assert.match(html, /<dialog id="files-dialog"[^>]*aria-labelledby="files-title"[^>]*aria-describedby="files-note"/);
+});
+
+test("workspace folder navigation, breadcrumbs and pagination follow response offsets without changing the chat", async () => {
+  const client = realBrowserClient(fileChat); await client.ready;
+  client.receiveFiles(url => {
+    const path = url.searchParams.get("path"), offset = Number(url.searchParams.get("offset"));
+    if (path === "reports/deep") return workspaceListing([], path);
+    if (path === "reports") return workspaceListing([workspaceEntry("deep", "directory", "reports/deep"), workspaceEntry("report.txt", "file", "reports/report.txt")], path);
+    if (offset === 2) return workspaceListing([workspaceEntry("last.txt")]);
+    return workspaceListing([workspaceEntry("reports", "directory"), workspaceEntry("first.txt")], "", 2);
+  });
+  const ui = client.ui;
+  await ui.files.events.get("click")();
+  assert.equal(ui["files-next"].disabled, false); assert.equal(ui["files-previous"].disabled, true);
+  await ui["files-next"].events.get("click")();
+  assert.equal(ui["files-page"].textContent, "Showing 3–3");
+  assert.equal(ui["files-next"].disabled, true); assert.equal(ui["files-previous"].disabled, false);
+  await ui["files-previous"].events.get("click")();
+  assert.equal(ui["files-page"].textContent, "Showing 1–2");
+  const reports = client.createdElements.find(element => element.className === "file-name file-folder" && element.children[1].textContent === "reports");
+  await reports.events.get("click")();
+  assert.equal(client.run("filesPath"), "reports");
+  assert.equal(ui["files-up"].disabled, false); assert.equal(ui["files-root"].disabled, false);
+  const deep = client.createdElements.find(element => element.className === "file-name file-folder" && element.children[1].textContent === "deep");
+  await deep.events.get("click")();
+  assert.equal(ui["files-list"].hidden, true); assert.equal(ui["files-status"].textContent, "This folder is empty.");
+  const breadcrumbs = ui["files-breadcrumbs"].children[0].children.filter(element => element.tagName === "button");
+  assert.deepEqual(breadcrumbs.map(element => element.textContent), ["Workspace", "reports", "deep"]);
+  await breadcrumbs[1].events.get("click")();
+  assert.equal(client.run("filesPath"), "reports");
+  await ui["files-up"].events.get("click")();
+  assert.equal(client.run("filesPath"), "");
+  await ui["files-refresh"].events.get("click")();
+  const requests = client.requests.filter(request => request.route.endsWith("/files"));
+  assert.equal(requests.length, 8);
+  assert.equal(client.run("sessionId"), "chat");
+  assert.deepEqual(plain(client.run("state.messages")), fileChat.messages);
+});
+
+test("oversized workspace files remain visible with a limit explanation and no download link", async () => {
+  const client = realBrowserClient(fileChat); await client.ready;
+  client.receiveFiles(workspaceListing([workspaceEntry("allowed.bin", "file", "allowed.bin", helpers.fileDownloadMaxBytes),
+    workspaceEntry("too-large.bin", "file", "too-large.bin", helpers.fileDownloadMaxBytes + 1)]));
+  await client.ui.files.events.get("click")();
+  const links = client.createdElements.filter(element => element.className === "file-name file-download");
+  assert.deepEqual(links.map(link => link.download), ["allowed.bin"]);
+  const unavailable = client.createdElements.find(element => element.className === "file-name file-unavailable");
+  assert.equal(unavailable.children[1].textContent, "too-large.bin");
+  assert.equal(unavailable.href, undefined);
+  assert.equal(unavailable.title, "Downloads support files up to 64 MiB.");
+  assert.equal(client.createdElements.some(element => element.className === "file-limit" && element.textContent.includes("64 MiB")), true);
+});
+
+test("closed and switched Files dialogs ignore late responses, and Escape returns focus without pausing activity", async () => {
+  const client = realBrowserClient(fileChat); await client.ready;
+  let resolveFirst;
+  client.receiveFiles(() => new Promise(resolve => { resolveFirst = resolve; }));
+  const ui = client.ui;
+  const first = ui.files.events.get("click")();
+  await new Promise(resolve => setImmediate(resolve));
+  let prevented = false;
+  ui["files-dialog"].events.get("cancel")({preventDefault() { prevented = true; }});
+  assert.equal(prevented, true); assert.equal(ui["files-dialog"].open, false);
+  assert.equal(ui.files.focusCalls, 1);
+  client.receiveFiles(workspaceListing([workspaceEntry("fresh.txt")]));
+  await ui.files.events.get("click")();
+  ui["files-dialog"].events.get("close")();
+  assert.equal(ui["files-dialog"].open, true, "a delayed close event from the previous dialog cannot close its newly opened replacement");
+  resolveFirst(workspaceListing([workspaceEntry("stale.txt")])); await first;
+  assert.deepEqual(plain(client.run("filesEntries.map(entry=>entry.name)")), ["fresh.txt"]);
+  let resolveSwitch;
+  client.receiveFiles(() => new Promise(resolve => { resolveSwitch = resolve; }));
+  const refreshing = ui["files-refresh"].events.get("click")();
+  await new Promise(resolve => setImmediate(resolve));
+  client.run("applyState({...state,session_id:'different-chat',revision:1})");
+  assert.equal(ui["files-dialog"].open, false);
+  resolveSwitch(workspaceListing([workspaceEntry("old-chat.txt")])); await refreshing;
+  assert.equal(client.run("filesEntries.length"), 0);
+  assert.equal(client.requests.filter(request => request.method === "POST" && !request.route.endsWith("/presence")).length, 0);
+});
+
+test("file-list errors stay inside the dialog and session changes, New chat and Import clear file state", async () => {
+  const original = {...fileChat, status: "idle", autonomous_turns: 3, next_idle_seconds: null};
+  const client = realBrowserClient(original); await client.ready;
+  const ui = client.ui;
+  ui.message.value = "Keep draft"; ui.target.value = "codex";
+  client.receiveFiles(workspaceListing([workspaceEntry("report.txt")]));
+  await ui.files.events.get("click")();
+  client.reject(403, "Workspace files are unavailable to this browser");
+  await ui["files-refresh"].events.get("click")();
+  assert.equal(ui["files-status"].textContent, "Workspace files are unavailable to this browser");
+  assert.equal(ui["files-status"].classList.contains("error"), true);
+  assert.equal(ui.notice.hidden, true, "file errors do not replace conversation notices");
+  assert.equal(ui["files-refresh"].disabled, false);
+  assert.equal(ui.message.value, "Keep draft"); assert.equal(ui.target.value, "codex");
+
+  const next = realBrowserClient(original); await next.ready;
+  next.receiveFiles(workspaceListing([workspaceEntry("file.txt")]));
+  await next.ui.files.events.get("click")();
+  next.receive({...original, session_id: "new-chat", messages: []});
+  await next.run("createSession()");
+  assert.equal(next.ui["files-dialog"].open, false);
+  assert.equal(next.run("filesEntries.length"), 0);
+
+  const imported = realBrowserClient(original); await imported.ready;
+  imported.receiveFiles(workspaceListing([workspaceEntry("old-workspace.txt")]));
+  await imported.ui.files.events.get("click")();
+  imported.ui.message.value = "Retain import draft";
+  imported.ui["import-file"].files = [jsonFile(exportedArchive)];
+  imported.receive({...original, session_id: "imported", paused: true});
+  await imported.ui["import-file"].events.get("change")();
+  assert.equal(imported.ui["files-dialog"].open, false);
+  assert.equal(imported.run("filesEntries.length"), 0);
+  assert.equal(imported.ui.message.value, "Retain import draft");
 });
 
 test("daily allowance uses settled estimates plus unresolved reservations instead of gross historical admissions", () => {

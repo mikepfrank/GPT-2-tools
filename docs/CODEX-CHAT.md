@@ -225,6 +225,28 @@ leave the selected conversation and unsent draft intact. LF line breaks and
 ordinary blank lines are preserved. The picker rejects unsafe JSON integers
 rather than silently rounding evidence; exported seeds use decimal strings.
 
+**Files** opens this chat's Codex workspace without changing the conversation
+or pausing activity. Browse folders using the breadcrumbs or Up button,
+refresh to see newly created files, and select Download for an individual
+file. Browsing and downloads make no model/API calls. New and imported chats
+have their own workspaces; importing a transcript does not copy workspace
+files or the original native Codex state.
+
+File routes require the same owner cookie as the conversation and expose
+only regular files and folders below that session's workspace. They do not
+expose its neighboring Codex home or other chats. Symbolic links, hard-linked
+files and special files are excluded. Directory traversal uses opened Linux
+directory descriptors, so a link or renamed path cannot redirect a download
+outside the workspace. The secure backend fails closed on platforms that do
+not support these operations.
+
+Listings use 200-entry pages and scan at most 10,000 entries per directory.
+Individual downloads are limited to 64 MiB and stream as HTTP attachments
+with an opaque content type, rather than executing workspace content in the
+site's origin. Files changing during a download can interrupt the transfer;
+refresh and download again when the file is ready. Browser download handling
+and its Save As preferences still apply.
+
 Back up private chat, ledger, and Codex state using consistent SQLite backups
 and private filesystem storage. Do not commit these files or use an old
 budget database to reset a quota. Pause affected chats and let active work
@@ -392,6 +414,8 @@ The API is rooted beneath the opaque base path:
 | `POST /api/sessions/<id>/settings` | Set temperature; the reply cap remains 120 tokens |
 | `GET /api/sessions/<id>/export` | Export private history and generation evidence |
 | `GET /api/sessions/<id>/export/download` | Download the same archive as an HTTP attachment |
+| `GET /api/sessions/<id>/files?path=<directory>&offset=<offset>` | List a page of this owner's workspace folder |
+| `GET /api/sessions/<id>/files/download?path=<file>` | Download one regular workspace file as an attachment |
 | `GET /health` | Read application health without generation |
 
 ## Verification boundary

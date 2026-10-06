@@ -109,6 +109,38 @@
     .notice.error { border-color: var(--error); background: var(--error-bg); color: var(--error); }
     .notice-actions { display: flex; gap: 8px; margin-top: 9px; }
     .notice-actions button { padding: 5px 9px; font-size: .78rem; }
+    .files-dialog { width: min(760px, calc(100vw - 28px)); max-height: min(86vh, 800px); margin: auto; padding: 0; overflow: auto; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+    .files-dialog::backdrop { background: rgb(16 21 32 / 45%); }
+    .files-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 20px 0; }
+    .files-heading button { padding: 6px 10px; font-size: .8rem; }
+    .files-content { padding: 0 20px 18px; }
+    .files-note { color: var(--muted); font-size: .8rem; line-height: 1.5; margin: 10px 0 15px; }
+    .files-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .files-tools button, .files-pagination button { padding: 5px 9px; font-size: .78rem; }
+    .files-tools #files-refresh { margin-left: auto; }
+    .files-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 12px 0 0; overflow-wrap: anywhere; }
+    .files-breadcrumbs button { padding: 3px 6px; font-size: .8rem; white-space: normal; overflow-wrap: anywhere; }
+    .files-breadcrumbs button:disabled { opacity: 1; color: var(--muted); }
+    .files-breadcrumbs span { color: var(--muted); }
+    .files-status { margin: 12px 0; color: var(--muted); font-size: .8rem; line-height: 1.45; }
+    .files-status.error { color: var(--error); }
+    .files-list { overflow: auto; max-height: min(48vh, 470px); border: 1px solid var(--line); border-radius: 7px; }
+    .files-table { width: 100%; border-collapse: collapse; text-align: left; font-size: .8rem; }
+    .files-table th, .files-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .files-table tr:last-child td { border-bottom: 0; }
+    .files-table th { color: var(--muted); font-weight: 600; background: var(--soft); position: sticky; top: 0; }
+    .files-table th:first-child { width: 100%; }
+    .files-size { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
+    .files-modified { min-width: 132px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: .75rem; }
+    .file-name { color: var(--accent); font-size: .8rem; text-align: left; overflow-wrap: anywhere; white-space: normal; }
+    .file-name.file-folder { border: 0; background: none; padding: 0; font-weight: 600; }
+    .file-name.file-download { text-decoration: none; }
+    a.file-name:hover, button.file-name:hover { text-decoration: underline; }
+    .file-name.file-unavailable { color: var(--muted); }
+    .file-limit { display: block; color: var(--muted); font-size: .72rem; margin-top: 3px; }
+    .file-icon { display: inline-block; width: 16px; color: var(--muted); }
+    .files-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 13px; color: var(--muted); font-size: .76rem; }
+    .files-pagination-actions { display: flex; gap: 7px; }
     .footnote { color: var(--muted); font-size: .73rem; line-height: 1.5; margin: 13px 2px 0; }
     @media (prefers-color-scheme: dark) {
       :root { color-scheme: dark; --page: #13161e; --panel: #1b202b; --soft: #171c26; --ink: #e2e5ed; --muted: #9ca7ba; --line: #323a4b; --accent: #a89ae7; --hover: #c1b5f3; --focus: #8275be; --human: #86bde8; --gpt2: #ecaa8c; --codex: #bca9f4; --error: #ffabab; --error-bg: #2c2029; --shadow: none; }
@@ -137,6 +169,10 @@
       .composer-bottom { align-items: flex-end; }
       .keyboard-hint { max-width: 180px; line-height: 1.5; }
       .composer-actions button { padding: 9px 11px; }
+      .files-heading { padding-left: 14px; padding-right: 14px; }
+      .files-content { padding-left: 14px; padding-right: 14px; }
+      .files-table th, .files-table td { padding: 8px 7px; }
+      .files-modified { min-width: 105px; }
     }
     @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } .wait-track { display: none; } .wait-fill { transition: none !important; } .gpt2-wait.is-animated .gpt2-sweep { animation: none; transform: translateX(21px); } }
   </style>
@@ -152,6 +188,7 @@
         <button id="pause" type="button" disabled>Pause activity</button>
         <button id="export" type="button" disabled>Export chat</button>
         <button id="import" type="button" title="Load an exported chat as a separate conversation. Your current chat stays saved." disabled>Import chat</button>
+        <button id="files" type="button" title="Browse and download files from this chat's Codex workspace." disabled>Files</button>
         <input id="import-file" type="file" accept=".json,application/json" aria-label="Choose an exported chat JSON file" hidden>
         <details class="tools" id="settings-details">
           <summary>Settings</summary>
@@ -213,6 +250,17 @@
     <div id="notice" class="notice" hidden role="status" aria-live="polite"><span id="notice-text"></span><div id="notice-actions" class="notice-actions" hidden><button id="retry-message" type="button" hidden>Retry same message</button><button id="retry-continue" type="button" hidden>Retry continue</button><button id="reconnect" type="button" hidden>Reconnect</button></div></div>
     <p class="footnote">Codex can work in the background and invite GPT-2 to respond. After a quiet minute, the conversation can continue for up to three autonomous turns, with longer waits between turns. Activity pauses when you leave the page. GPT-2’s replies can be unpredictable.</p>
   </main>
+  <dialog id="files-dialog" class="files-dialog" aria-labelledby="files-title" aria-describedby="files-note">
+    <div class="files-heading"><h2 id="files-title">Workspace files</h2><button id="files-close" type="button" aria-label="Close workspace files">Close</button></div>
+    <div class="files-content">
+      <p id="files-note" class="files-note">Files in this chat’s Codex workspace. Browsing and downloading leave the conversation running. Individual downloads support files up to 64 MiB.</p>
+      <div class="files-tools"><button id="files-root" type="button">Root</button><button id="files-up" type="button">Up</button><button id="files-refresh" type="button">Refresh</button></div>
+      <nav id="files-breadcrumbs" class="files-breadcrumbs" aria-label="Workspace folder"></nav>
+      <p id="files-status" class="files-status" role="status" aria-live="polite" aria-atomic="true">Open a folder to browse files.</p>
+      <div id="files-list" class="files-list" hidden><table class="files-table"><thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Modified</th></tr></thead><tbody id="files-entries"></tbody></table></div>
+      <div class="files-pagination"><span id="files-page"></span><span class="files-pagination-actions"><button id="files-previous" type="button" disabled>Previous</button><button id="files-next" type="button" disabled>Next</button></span></div>
+    </div>
+  </dialog>
   <script id="chat-helpers">
     "use strict";
     const CodexChatHelpers = (() => {
@@ -224,6 +272,19 @@
         return new URL("api/", url).href;
       }
       function storageKey(href) { return "gpt2-codex:v1:" + apiBase(href); }
+      function fileSize(bytes) {
+        if (!Number.isFinite(bytes) || bytes < 0) return "—";
+        if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+        const units = ["KiB", "MiB", "GiB", "TiB"];
+        let size = bytes / 1024, index = 0;
+        while (size >= 1024 && index < units.length - 1) { size /= 1024; index++; }
+        return `${size.toLocaleString(undefined, {maximumFractionDigits: 1})} ${units[index]}`;
+      }
+      const fileDownloadMaxBytes = 64 * 1024 * 1024;
+      function fileDownloadUrl(base, sessionId, path) {
+        const url = new URL(`sessions/${encodeURIComponent(sessionId)}/files/download`, base);
+        url.searchParams.set("path", path); return url.href;
+      }
       const importMaxBytes = 10 * 1024 * 1024;
       async function readImportFile(file) {
         if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.text !== "function")
@@ -394,14 +455,14 @@
         if (!String(text).trim() || !Number.isFinite(value) || value < 0 || value > 2) throw new Error("Choose a temperature between 0 and 2.");
         return value;
       }
-      return {roles, apiBase, storageKey, importMaxBytes, readImportFile, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, generationActivity, createGenerationActivity, budgetText, budgetTooltip, messageTime, validateTemperature};
+      return {roles, apiBase, storageKey, fileSize, fileDownloadMaxBytes, fileDownloadUrl, importMaxBytes, readImportFile, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, generationActivity, createGenerationActivity, budgetText, budgetTooltip, messageTime, validateTemperature};
     })();
   </script>
   <script>
     "use strict";
     const helpers = CodexChatHelpers;
     const element = id => document.getElementById(id);
-    const ui = Object.fromEntries(["pause", "export", "import", "import-file", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "gpt2-wait", "gpt2-wait-label", "gpt2-announcement", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
+    const ui = Object.fromEntries(["pause", "export", "import", "import-file", "files", "files-dialog", "files-close", "files-root", "files-up", "files-refresh", "files-breadcrumbs", "files-status", "files-list", "files-entries", "files-page", "files-previous", "files-next", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "gpt2-wait", "gpt2-wait-label", "gpt2-announcement", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
     const base = helpers.apiBase(location.href);
     const key = helpers.storageKey(location.href);
     let sessionId = readSaved("session");
@@ -409,6 +470,8 @@
     let pendingContinue = helpers.savedContinue(readSaved("pending-continue", true), sessionId);
     let timer = null, failures = 0, pollSequence = 0, sessionEpoch = 0, historySignature = "", lastContext = null;
     let connectionError = "", actionError = "", infoNotice = "";
+    let filesRequest = 0, filesSessionId = null, filesLoading = false;
+    let filesPath = "", filesParent = null, filesOffset = 0, filesPrevious = [], filesNext = null, filesEntries = [];
     const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
     const idleIndicator = helpers.createIdleWait({
       now: () => performance.now(), setInterval, clearInterval,
@@ -462,6 +525,7 @@
       ui.send.disabled = unavailable || helpers.isBusy(state) || Boolean(pending);
       ui.pause.disabled = unavailable;
       ui.export.disabled = unavailable || stopped;
+      ui.files.disabled = !state || stopped;
       ui.import.disabled = unavailable || stopped || helpers.isBusy(state) || Boolean(pending || pendingContinue);
       ui["import-file"].disabled = ui.import.disabled;
       ui["save-settings"].disabled = unavailable || helpers.isBusy(state);
@@ -540,6 +604,7 @@
     function applyState(incoming, controls = false) {
       if (!incoming || typeof incoming.session_id !== "string" || typeof incoming.context_text !== "string") throw new Error("The server returned an incomplete conversation. Reconnecting…");
       if (!helpers.acceptsState(state, incoming)) return;
+      if (sessionId !== incoming.session_id) resetFiles();
       state = incoming; sessionId = incoming.session_id; save("session", sessionId);
       if (helpers.pendingAccepted(pending, incoming)) acknowledgePending();
       if (helpers.continueAccepted(pendingContinue, incoming)) acknowledgeContinue();
@@ -583,8 +648,116 @@
       if (!sessionId || stopped && connected) return;
       try { await fetch(new URL(endpoint("/presence"), base), {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({connected}), keepalive: true}); } catch (_) { /* State polling reports connectivity. */ }
     }
+    function refreshFilesControls() {
+      const unavailable = !ui["files-dialog"].open || !filesSessionId || filesLoading || stopped;
+      ui["files-root"].disabled = unavailable || !filesPath;
+      ui["files-up"].disabled = unavailable || filesParent === null;
+      ui["files-refresh"].disabled = unavailable;
+      ui["files-previous"].disabled = unavailable || !filesPrevious.length;
+      ui["files-next"].disabled = unavailable || filesNext === null;
+      ui["files-list"].setAttribute("aria-busy", String(filesLoading));
+    }
+    function resetFiles(returnFocus = false) {
+      const wasOpen = ui["files-dialog"].open;
+      filesRequest++; filesSessionId = null; filesLoading = false;
+      filesPath = ""; filesParent = null; filesOffset = 0; filesPrevious = []; filesNext = null; filesEntries = [];
+      ui["files-entries"].replaceChildren(); ui["files-breadcrumbs"].replaceChildren();
+      ui["files-list"].hidden = true; ui["files-page"].textContent = "";
+      ui["files-status"].textContent = "Open a folder to browse files.";
+      ui["files-status"].classList.toggle("error", false);
+      refreshFilesControls();
+      if (wasOpen) ui["files-dialog"].close();
+      if (wasOpen && returnFocus && !ui.files.disabled) ui.files.focus();
+    }
+    function renderFiles() {
+      const breadcrumb = document.createDocumentFragment();
+      const paths = [{name: "Workspace", path: ""}];
+      if (filesPath) {
+        const segments = filesPath.split("/");
+        segments.forEach((name, index) => paths.push({name, path: segments.slice(0, index + 1).join("/")}));
+      }
+      paths.forEach((part, index) => {
+        if (index) { const separator = document.createElement("span"); separator.textContent = "/"; separator.setAttribute("aria-hidden", "true"); breadcrumb.appendChild(separator); }
+        const button = document.createElement("button"); button.type = "button"; button.textContent = part.name;
+        button.disabled = part.path === filesPath;
+        button.addEventListener("click", () => loadFiles(part.path)); breadcrumb.appendChild(button);
+      });
+      ui["files-breadcrumbs"].replaceChildren(breadcrumb);
+      const fragment = document.createDocumentFragment();
+      for (const entry of filesEntries) {
+        const row = document.createElement("tr"), name = document.createElement("td");
+        const downloadable = entry.kind === "file" && (entry.size === null || entry.size <= helpers.fileDownloadMaxBytes);
+        const action = document.createElement(entry.kind === "directory" ? "button" : downloadable ? "a" : "span");
+        action.className = "file-name " + (entry.kind === "directory" ? "file-folder" : downloadable ? "file-download" : "file-unavailable");
+        const icon = document.createElement("span"); icon.className = "file-icon"; icon.textContent = entry.kind === "directory" ? "▸" : downloadable ? "↓" : "·"; icon.setAttribute("aria-hidden", "true");
+        const label = document.createElement("span"); label.textContent = entry.name; action.append(icon, label);
+        if (entry.kind === "directory") {
+          action.type = "button"; action.title = "Open folder " + entry.name;
+          action.addEventListener("click", () => loadFiles(entry.path));
+        } else if (downloadable) {
+          action.href = helpers.fileDownloadUrl(base, filesSessionId, entry.path); action.download = entry.name;
+          action.title = "Download " + entry.name;
+          action.addEventListener("click", () => {
+            ui["files-status"].textContent = "Download requested for " + entry.name + ".";
+            ui["files-status"].classList.toggle("error", false);
+          });
+        } else {
+          action.title = "Downloads support files up to 64 MiB.";
+        }
+        name.appendChild(action);
+        if (entry.kind === "file" && !downloadable) {
+          const limit = document.createElement("span"); limit.className = "file-limit"; limit.textContent = "Over the 64 MiB download limit"; name.appendChild(limit);
+        }
+        const size = document.createElement("td"); size.className = "files-size";
+        size.textContent = entry.kind === "directory" ? "Folder" : helpers.fileSize(entry.size);
+        const modified = document.createElement("td"); modified.className = "files-modified";
+        modified.textContent = helpers.messageTime(entry.modified, true) || "—";
+        row.append(name, size, modified); fragment.appendChild(row);
+      }
+      ui["files-entries"].replaceChildren(fragment); ui["files-list"].hidden = !filesEntries.length;
+      ui["files-page"].textContent = filesEntries.length ? `Showing ${filesOffset + 1}–${filesOffset + filesEntries.length}` : "0 items";
+      ui["files-status"].textContent = filesEntries.length ? `${filesEntries.length} ${filesEntries.length === 1 ? "item" : "items"} in this page.` : "This folder is empty.";
+      ui["files-status"].classList.toggle("error", false);
+    }
+    async function loadFiles(path = "", offset = 0, previous = []) {
+      if (!ui["files-dialog"].open || filesSessionId !== sessionId || stopped) return;
+      const seq = ++filesRequest, id = filesSessionId, epoch = sessionEpoch;
+      filesLoading = true; refreshFilesControls(); ui["files-list"].hidden = true;
+      ui["files-status"].textContent = "Loading workspace files…"; ui["files-status"].classList.toggle("error", false);
+      const current = () => seq === filesRequest && epoch === sessionEpoch && id === sessionId &&
+        id === filesSessionId && ui["files-dialog"].open && !stopped;
+      try {
+        const query = new URLSearchParams({path, offset: String(offset)});
+        const incoming = await request(endpoint("/files?" + query, id));
+        if (!current()) return;
+        if (!incoming || incoming.session_id !== id || typeof incoming.path !== "string" ||
+          incoming.parent !== null && typeof incoming.parent !== "string" || !Array.isArray(incoming.entries) ||
+          incoming.entries.some(entry => !entry || typeof entry.name !== "string" || typeof entry.path !== "string" ||
+            !["directory", "file"].includes(entry.kind) || entry.size !== null && (!Number.isFinite(entry.size) || entry.size < 0) ||
+            !Number.isFinite(entry.modified)) || incoming.next_offset !== null &&
+            (!Number.isSafeInteger(incoming.next_offset) || incoming.next_offset <= offset))
+          throw new Error("The server returned an incomplete file listing. Refresh to try again.");
+        filesPath = incoming.path; filesParent = incoming.parent; filesOffset = offset;
+        filesPrevious = [...previous]; filesNext = incoming.next_offset; filesEntries = incoming.entries;
+        renderFiles();
+      } catch (error) {
+        if (!current()) return;
+        ui["files-list"].hidden = !filesEntries.length;
+        ui["files-status"].textContent = error.message || "Workspace files could not be loaded. Try Refresh.";
+        ui["files-status"].classList.toggle("error", true);
+      } finally { if (current()) { filesLoading = false; refreshFilesControls(); } }
+    }
+    function openFiles() {
+      if (!state || stopped) return;
+      let loading;
+      if (!ui["files-dialog"].open) {
+        resetFiles(); filesSessionId = sessionId; ui["files-dialog"].showModal(); loading = loadFiles();
+      }
+      ui["files-close"].focus(); return loading;
+    }
     async function createSession() {
       if (mutation) return;
+      resetFiles();
       mutation = true; clearTimeout(timer); refreshControls(); actionError = ""; infoNotice = "";
       const oldId = sessionId;
       try {
@@ -660,6 +833,7 @@
     async function importChat() {
       const file = ui["import-file"].files && ui["import-file"].files[0];
       if (!file || !state || mutation || stopped || helpers.isBusy(state) || pending || pendingContinue) return;
+      resetFiles();
       mutation = true; clearTimeout(timer); pollSequence++; actionError = ""; infoNotice = "";
       refreshControls(); refreshNotice();
       const oldId = sessionId;
@@ -689,6 +863,15 @@
       catch (error) { actionError = error.message; refreshNotice(); ui.temperature.focus(); }
     });
     ui.export.addEventListener("click", exportChat);
+    ui.files.addEventListener("click", openFiles);
+    ui["files-close"].addEventListener("click", () => resetFiles(true));
+    ui["files-dialog"].addEventListener("cancel", event => { event.preventDefault(); resetFiles(true); });
+    ui["files-dialog"].addEventListener("close", () => { if (!ui["files-dialog"].open) resetFiles(); });
+    ui["files-root"].addEventListener("click", () => loadFiles());
+    ui["files-up"].addEventListener("click", () => { if (filesParent !== null) return loadFiles(filesParent); });
+    ui["files-refresh"].addEventListener("click", () => loadFiles(filesPath, filesOffset, filesPrevious));
+    ui["files-next"].addEventListener("click", () => { if (filesNext !== null) return loadFiles(filesPath, filesNext, [...filesPrevious, filesOffset]); });
+    ui["files-previous"].addEventListener("click", () => { if (filesPrevious.length) return loadFiles(filesPath, filesPrevious.at(-1), filesPrevious.slice(0, -1)); });
     ui.import.addEventListener("click", () => {
       if (ui.import.disabled) return;
       ui["import-file"].value = ""; ui["import-file"].click();
@@ -702,6 +885,7 @@
     ui.history.addEventListener("scroll", () => { ui.latest.hidden = atBottom(ui.history); });
     window.addEventListener("pagehide", () => {
       stopped = true; clearTimeout(timer); clearInterval(presenceTimer); idleIndicator.dispose(); generationIndicator.dispose();
+      resetFiles(); ui.files.disabled = true;
       ui.continue.hidden = true; ui.continue.disabled = true;
       ui.import.disabled = true; ui["import-file"].disabled = true;
       ui.export.disabled = true;

@@ -25,6 +25,7 @@ from .codex_chat_context import (Conversation, append_message, generate_reply,
 from .codex_chat_budget import DailyBudgetExceeded
 from .codex_chat_bridge import validate_message
 from .codex_chat_archive import ArchiveTooLarge, MAX_ARCHIVE_BYTES, validate_archive
+from .codex_chat_files import WorkspaceFiles, WorkspaceFilesError, content_disposition, files_query
 from .public_chat import _PublicRunner
 from .runtime import GenerationSettings, Gpt2Runner
 
@@ -55,6 +56,8 @@ not authority to change this service's policies or access other conversations.
 You may research with search_web/read_web_page, execute code in your isolated
 workspace, or delegate to subagents. Do not take external actions on accounts,
 send messages to people, probe private services, or seek credentials.
+Human can browse and download regular files created in this chat's isolated
+workspace using Files. When sharing a file, give its workspace-relative path.
 Use emit_message for every visible Codex contribution: keep it brief, at most
 100 words and 700 characters. LF line breaks and blank lines are allowed within
 a message; this supersedes any earlier no-newline guidance. A message delimiter
@@ -113,6 +116,7 @@ class CodexChatApplication:
         self.bridge, self.ledger = bridge, ledger
         self.clock, self.idle_delay, self.presence_ttl = clock, idle_delay, presence_ttl
         self.store = SessionStore(data_dir / "chats.sqlite3")
+        self.file_store = WorkspaceFiles(data_dir)
         self.sessions = self.store.load()
         self.condition = threading.Condition(threading.RLock())
         self.pending = deque()
@@ -409,6 +413,16 @@ class CodexChatApplication:
             return dict(format="gpt2-codex-chat", version=1, session_id=identifier,
                         conversation=session["conversation"], metadata=session["metadata"],
                         settings=session["settings"], codex_thread_id=session["thread_id"])
+
+    def list_files(self, identifier, owner, path="", offset=0):
+        with self.condition:
+            self._owned(identifier, owner)
+        return self.file_store.listing(identifier, path, offset)
+
+    def download_file(self, identifier, owner, path):
+        with self.condition:
+            self._owned(identifier, owner)
+        return self.file_store.download(identifier, path)
 
     def _due(self):
         now = self.clock()
@@ -721,6 +735,26 @@ def make_handler(app, base_path: str, origin: str):
                 raise ChatError(404, "Chat not found in this browser")
             return hashlib.sha256(raw.encode("ascii")).hexdigest(), new
 
+        def _send_file(self, opened):
+            # Changes detected before headers are normal JSON errors. Once an
+            # attachment has begun, a short body plus connection close reports
+            # failure; a second JSON response would corrupt the downloaded file.
+            opened.verify()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(opened.size))
+                self.send_header("Content-Disposition", content_disposition(opened.name))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+                self.end_headers()
+                for block in opened.chunks():
+                    self.wfile.write(block)
+            except (WorkspaceFilesError, OSError):
+                self.close_connection = True
+
         def _path(self):
             path = urlsplit(self.path).path
             if path == base_path or path == base_path + "/":
@@ -770,6 +804,17 @@ def make_handler(app, base_path: str, origin: str):
                 if path == "health":
                     self._send(200, {"ok": True, "application": "gpt2-codex"})
                     return
+                files_match = re.fullmatch(r"api/sessions/([a-f0-9]{32})/files(/download)?", path)
+                if files_match:
+                    owner, _ = self._owner()
+                    identifier, download = files_match.groups()
+                    relative, offset = files_query(urlsplit(self.path).query, download=bool(download))
+                    if download:
+                        with app.download_file(identifier, owner, relative) as opened:
+                            self._send_file(opened)
+                    else:
+                        self._send(200, app.list_files(identifier, owner, relative, offset))
+                    return
                 match = re.fullmatch(r"api/sessions/([a-f0-9]{32})(/export(?:/download)?)?", path)
                 if not match:
                     raise ChatError(404, "Not found")
@@ -779,7 +824,7 @@ def make_handler(app, base_path: str, origin: str):
                                  if export == "/export/download" else None)
                 self._send(200, app.export(identifier, owner) if export else app.state(identifier, owner),
                            download_name=download_name)
-            except ChatError as exc:
+            except (ChatError, WorkspaceFilesError) as exc:
                 self._send(exc.status, {"error": str(exc)})
             except (ValueError, KeyError):
                 self._send(400, {"error": "Invalid request"})
