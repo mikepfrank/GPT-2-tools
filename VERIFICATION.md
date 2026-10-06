@@ -1945,3 +1945,48 @@ Without reloading, the live browser returned to **Ready · waiting for you**
 with 44 messages, an enabled composer and no error. The new backend policy
 takes effect on Codex's next action. Browser draft/recipient remained intact;
 the final screenshot is private outside the repository.
+
+### GPT-2 activity and countdown Continue — October 5, 2026 CDT
+
+The footer's new orange indeterminate sweep distinguishes **preparing reply**
+before visible GPT-2 text from **generating** once streamed text is available.
+It uses existing `status`/`active.content` snapshots, not elapsed-time progress
+estimates or extra model calls. This preparation phase can include inference
+prefill, queuing or buffered output; it does not claim a measured model phase.
+The animation hides on pause, errors, disconnection and page shutdown, and
+reduced motion retains static text/bar. Accessible phase announcements avoid
+per-poll updates. Continue shares that footer area with the countdown and
+Waiting for you states.
+
+Continue during a scheduled lull queues the next action immediately without
+inserting a Human message or renewing the current autonomous allowance. The
+same predicate defines server scheduling and shortened waits. Tool snapshots
+report the actual remaining autonomous budget; existing query/commit guards
+stop at three cumulative contributions. Native thread, durable request-ID
+deduplication and any requested one-round recovery follow-up are preserved.
+Exhausted/retryable conversations retain the earlier reset-to-zero behavior.
+
+The focused Linux bridge, orchestration/HTTP and context suites passed
+**73 tests in 1.797 seconds**. All **29 Node frontend tests passed**, including
+the real page scripts executed in a VM DOM harness. Actual browser checks used
+the real HTML with a synthetic HTTP fixture: preparation rendered an animated
+sweep, text arrival switched its label to generation, and scheduled Continue
+was enabled beside the two-minute timer and switched to thinking without
+changing the two-message history, unsent draft or recipient. No model ran in
+the fixture. Screenshots remain private outside the repository.
+
+The owner accepted another Human message during rollout preparation. An idle
+deployment guard stopped before source changes when its exhausted-allowance
+assumption no longer held; the beta was immediately restarted from unchanged
+source. The follow-up checkpoint retained all **seven chats** and **54 current
+messages**, with that new Human message pending and zero autonomous slots used.
+Private SQLite/source backups were made. Two tested runtime/UI files were
+installed atomically while paused; the browser refreshed before backend restart
+so refresh could not cancel the queued action. Only the beta service restarted.
+Before resuming, all conversation/metadata/native thread/settings/ownership,
+request IDs, counters and scheduling timestamps matched the checkpoint, as did
+all **99 admission rows** and the one reset row. Source hashes matched the tested
+files. All five HTTPS health routes passed and four existing service PIDs stayed
+unchanged. The temporary connection notice cleared automatically. The preserved
+Human message was then resumed through the normal control, with its counter
+already zero. No development generation or allowance reset was performed.

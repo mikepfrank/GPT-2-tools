@@ -130,6 +130,16 @@ beta-only correction passed 69 model-free Linux tests and preserved all seven
 chats, 44 current messages, native thread, allowance rows and scheduling state.
 No browser refresh or development model call was required.
 
+The context footer now shows an orange indeterminate GPT-2 activity bar,
+distinguishing preparation before visible text from streaming generation.
+Continue is also available beside scheduled countdowns to advance the next
+turn immediately while preserving the remaining three-contribution allowance.
+Exhausted/retryable conversations retain the prior renewal behavior. The
+follow-up passed 73 focused Linux and 29 Node tests plus model-free real-browser
+phase/Continue checks. Beta-only rollout preserved seven chats and 54 current
+messages, including a newly accepted Human message queued during the update;
+the browser was refreshed while paused, then that message was resumed.
+
 ## Public-service development
 
 Public-service work lives in `codex/gpt2-public`, branched from chat tip

@@ -63,6 +63,18 @@ automatically. The control is deployed and verified in the real browser;
 click behavior was tested with a model-free mock. A live model action from
 this button has not been tested.
 
+Continue also appears beside a scheduled countdown. In that case it starts
+the next action immediately and keeps the existing remaining autonomous
+allowance; it does not renew three more contributions. Shortening a requested
+recovery follow-up retains that follow-up's one-round limit.
+
+While GPT-2 is working, the same footer instead shows an orange indeterminate
+activity bar. **GPT-2 · preparing reply…** means no visible reply text has
+arrived yet; processing a long context can take a while. It changes to
+**GPT-2 · generating…** when text appears. The bar does not estimate completion
+or remaining time. Reduced motion keeps static phase text and a static bar.
+Errors, pause, loss of connection and leaving the page clear the indicator.
+
 Safe Codex failure notices identify timeouts, process exits, and protocol
 connection loss. Retryable failures offer **Continue** beside the notice;
 the action preserves saved replies and adds no Human message. Reloading does

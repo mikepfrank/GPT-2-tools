@@ -145,6 +145,8 @@ function continuationClient(storage = new Map(), request = async () => { throw n
     renderContext() {}, renderHistory() {}, schedule() {},
     idleIndicator: helpers.createIdleWait({now: () => 0, setInterval: () => 1, clearInterval() {}, announce() {},
       render: frame => { ui["idle-wait"].hidden = !frame.visible; ui["wait-rest"].hidden = !frame.waitingForHuman; }}),
+    generationIndicator: helpers.createGenerationActivity({announce() {},
+      render: frame => { ui["gpt2-wait"].hidden = !frame.visible; }}),
     presence: async () => {}, poll: async () => {}, createSession: async () => { throw new Error("Unexpected new chat"); },
     request: async (route, body) => { requests.push({route, body: plain(body)}); return request(route, body); }});
   vm.runInContext(source + "\nlet sessionId=readSaved('session'),state=waiting,pending=null,pendingContinue=helpers.savedContinue(readSaved('pending-continue',true),sessionId),mutation=false,stopped=false,sessionEpoch=0,actionError='',connectionError='',failures=0;", client);
@@ -271,6 +273,32 @@ test("a timeout keeps its exact notice visible beside manual Continue and retrie
   assert.deepEqual(plain(client.run("state.messages")), client.waiting.messages);
 });
 
+test("Continue can shorten a scheduled wait without a Human message, draft change or exhausted-wait label", async () => {
+  const client = continuationClient(undefined, async (_, body) => ({...client.waiting, revision: 2,
+    status: "queued", autonomous_turns: 1, last_continue_request_id: body.request_id}));
+  client.client.scheduled = {...client.waiting, autonomous_turns: 1, next_idle_seconds: 90,
+    idle_wait_seconds: 120, idle_wait_until: 1791234567};
+  client.run("applyState(scheduled)");
+  assert.equal(client.ui["idle-wait"].hidden, false);
+  assert.equal(client.ui["wait-rest"].hidden, true);
+  assert.equal(client.ui.continue.hidden, false);
+  assert.equal(client.ui.continue.disabled, false);
+  await client.run("continueConversation()");
+  assert.deepEqual(client.requests, [{route: "sessions/chat/continue", body: {request_id: "continue-request-0001"}}]);
+  assert.equal(client.run("state.autonomous_turns"), 1);
+  assert.equal(client.ui.continue.hidden, true);
+  assert.equal(client.ui["idle-wait"].hidden, true);
+  assert.equal(client.ui.message.value, "An unsent Human draft");
+  assert.equal(client.ui.target.value, "gpt2");
+  assert.deepEqual(plain(client.run("state.messages")), client.waiting.messages);
+  for (const invalid of [
+    {paused: true}, {connected: false}, {status: "generating"}, {error: "Budget exceeded", error_retryable: true},
+    {autonomous_turns: 3}, {idle_wait_until: null}, {idle_wait_seconds: 0}, {next_idle_seconds: -1}
+  ]) assert.equal(helpers.canContinue({...client.client.scheduled, ...invalid}), false);
+  assert.equal(helpers.canContinue({...client.waiting, connected: false}), false);
+  assert.equal([...html.matchAll(/id="continue"/g)].length, 1, "both wait modes share one button and request ID flow");
+});
+
 test("polling is responsive during work and backs off during interruptions", () => {
   for (const status of ["queued", "thinking", "generating"]) assert.equal(helpers.pollDelay({status}), 400);
   for (const status of ["idle", "error"]) assert.equal(helpers.pollDelay({status}), 2000);
@@ -386,6 +414,150 @@ test("reduced motion retains an accurate clock and phase announcements without b
   assert.match(html, /prefers-reduced-motion:[\s\S]*?\.wait-fill\s*\{\s*transition: none !important/);
   assert.equal(helpers.describeStatus({...scheduledWait, next_idle_seconds: 52}),
     helpers.describeStatus({...scheduledWait, next_idle_seconds: 1}), "the main live region also avoids announcing every poll");
+});
+
+const preparingGpt2 = {...scheduledWait, status: "generating", active: {role: "GPT-2", content: " "},
+  messages: [{id: "human-1", role: "Human", content: "Hello"}]};
+
+test("GPT-2 preparation stays distinct from visible generation and an indeterminate indicator never claims percent complete", () => {
+  const frames = [], announcements = [];
+  const indicator = helpers.createGenerationActivity({render: frame => frames.push(plain(frame)),
+    announce: text => announcements.push(text)});
+  for (const content of ["", " ", "\n\t", null]) indicator.update({...preparingGpt2, active: {role: "GPT-2", content}});
+  assert.equal(frames.at(-1).phase, "preparing");
+  assert.equal(frames.at(-1).label, "GPT-2 · preparing reply…");
+  assert.match(frames.at(-1).title, /first text can take a while/);
+  assert.equal(frames.at(-1).animated, true);
+  assert.equal("fraction" in frames.at(-1), false);
+  assert.equal("percent" in frames.at(-1), false);
+  assert.deepEqual(announcements, ["GPT-2 is preparing a reply. First text can take a while."]);
+  for (const content of [" A", " A reply", " "]) indicator.update({...preparingGpt2, active: {role: "GPT-2", content}});
+  assert.equal(frames.at(-1).phase, "generating", "decoder buffering does not rewind an already visible reply to preparation");
+  assert.deepEqual(announcements, ["GPT-2 is preparing a reply. First text can take a while.", "GPT-2 is generating its reply."]);
+  indicator.update({...preparingGpt2, messages: [...preparingGpt2.messages, {id: "gpt2-1", role: "GPT-2", content: "A reply"}]});
+  assert.equal(frames.at(-1).phase, "preparing", "a new query starts its own preparation phase");
+  indicator.update({...preparingGpt2, session_id: "another-chat"});
+  assert.equal(frames.at(-1).phase, "preparing");
+  indicator.dispose();
+  assert.equal(frames.at(-1).visible, false);
+  assert.equal(frames.at(-1).animated, false);
+});
+
+test("GPT-2 activity hides for stale, paused, failed and disconnected work and stays static under reduced motion", () => {
+  for (const [state, connected] of [
+    [null, true], [preparingGpt2, false], [{...preparingGpt2, connected: false}, true], [{...preparingGpt2, paused: true}, true],
+    [{...preparingGpt2, error: "The turn stopped"}, true], [{...preparingGpt2, status: "idle"}, true],
+    [{...preparingGpt2, status: "thinking"}, true], [{...preparingGpt2, status: "queued"}, true],
+    [{...preparingGpt2, active: null}, true], [{...preparingGpt2, active: {role: "Codex", content: "Hello"}}, true]
+  ]) assert.deepEqual(plain(helpers.generationActivity(state, connected)), {visible: false, phase: "off", animated: false});
+  assert.equal(helpers.generationActivity(preparingGpt2, true, true).visible, true);
+  assert.equal(helpers.generationActivity(preparingGpt2, true, true).animated, false);
+  assert.match(html, /prefers-reduced-motion:[\s\S]*?\.gpt2-wait\.is-animated \.gpt2-sweep\s*\{\s*animation: none;/);
+  assert.match(html, /id="gpt2-announcement"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+});
+
+function realBrowserClient(initial, reducedMotion = false) {
+  const nodes = new Map(), listeners = new Map(), storage = new Map();
+  const timers = new Map(); let serial = 0, incoming = initial, fail = false;
+  function node() {
+    const classes = new Set(), events = new Map(), attributes = new Map();
+    let text = "";
+    return {hidden: false, disabled: false, value: "", checked: false, style: {}, children: [], textWrites: 0,
+      scrollTop: 0, scrollHeight: 1200, clientHeight: 300,
+      get textContent() { return text; }, set textContent(value) { text = value; this.textWrites++; },
+      classList: {toggle(name, on) { if (on) classes.add(name); else classes.delete(name); }, contains: name => classes.has(name)},
+      setAttribute: (name, value) => attributes.set(name, value), getAttribute: name => attributes.get(name),
+      appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; }, addEventListener: (name, callback) => events.set(name, callback),
+      focus() {}, events};
+  }
+  for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
+    const element = node(); element.hidden = /\bhidden\b/.test(match[0]); nodes.set(match[1], element);
+  }
+  const href = "https://codex-test.gpt2-chat.com/closed-beta/";
+  storage.set(helpers.storageKey(href) + ":session", initial.session_id);
+  const timer = callback => { const id = ++serial; timers.set(id, callback); return id; };
+  const client = vm.createContext({URL, Blob, console, location: {href}, performance: {now: () => 0},
+    crypto: {randomUUID: () => "request-for-browser-test"},
+    document: {getElementById: id => nodes.get(id), createElement: node, createDocumentFragment: node},
+    window: {matchMedia: () => ({matches: reducedMotion}), addEventListener: (name, callback) => listeners.set(name, callback)},
+    navigator: {sendBeacon: () => true}, setInterval: timer, setTimeout: timer,
+    clearInterval: id => timers.delete(id), clearTimeout: id => timers.delete(id),
+    localStorage: {getItem: name => storage.get(name) ?? null, setItem: (name, value) => storage.set(name, value), removeItem: name => storage.delete(name)},
+    fetch: async (url, options = {}) => {
+      if (new URL(url).pathname.endsWith("/presence")) return {ok: true, json: async () => ({})};
+      if (fail) throw new Error("Offline");
+      return {ok: true, json: async () => incoming};
+    }});
+  vm.runInContext(scripts[0], client);
+  vm.runInContext(scripts[1].replace(/    boot\(\);\s*$/, "    globalThis.bootReady = boot();"), client);
+  return {ui: Object.fromEntries(nodes), listeners, ready: client.bootReady,
+    run: code => vm.runInContext(code, client), receive: value => { incoming = value; }, disconnect: () => { fail = true; }};
+}
+
+test("real browser scripts wire preparation, streamed text, timer Continue and waiting phases without touching draft or scroll", async () => {
+  const client = realBrowserClient({...preparingGpt2, revision: 1, context_text: "Header\n\nGPT-2>", context_tokens: 8});
+  await client.ready;
+  const ui = client.ui;
+  assert.equal(ui["gpt2-wait"].hidden, false);
+  assert.equal(ui["gpt2-wait"].classList.contains("is-animated"), true);
+  assert.equal(ui["gpt2-wait-label"].textContent, "GPT-2 · preparing reply…");
+  assert.equal(ui["idle-wait"].hidden, true);
+  assert.equal(ui["wait-rest"].hidden, true);
+  assert.equal(ui.continue.hidden, true);
+  ui.message.value = "Unsent draft"; ui.target.value = "gpt2"; ui.context.scrollTop = 42; ui.history.scrollTop = 77;
+  const textWrites = ui["gpt2-announcement"].textWrites;
+  await client.run("poll()");
+  assert.equal(ui["gpt2-announcement"].textWrites, textWrites, "repeated polls do not rewrite a live announcement");
+  client.receive({...preparingGpt2, revision: 2, context_text: "Header\n\nGPT-2> A reply", context_tokens: 10,
+    active: {role: "GPT-2", content: " A reply"}});
+  await client.run("poll()");
+  assert.equal(ui["gpt2-wait-label"].textContent, "GPT-2 · generating…");
+  assert.equal(ui["gpt2-announcement"].textContent, "GPT-2 is generating its reply.");
+  assert.equal(ui.context.scrollTop, 42); assert.equal(ui.history.scrollTop, 77);
+  client.receive({...scheduledWait, revision: 3, context_text: "Header", context_tokens: 4, messages: preparingGpt2.messages});
+  await client.run("poll()");
+  assert.equal(ui["gpt2-wait"].hidden, true);
+  assert.equal(ui["gpt2-wait"].classList.contains("is-animated"), false);
+  assert.equal(ui["idle-wait"].hidden, false);
+  assert.equal(ui.continue.hidden, false); assert.equal(ui.continue.disabled, false);
+  assert.equal(ui["wait-rest"].hidden, true);
+  client.receive({...scheduledWait, revision: 4, context_text: "Header", context_tokens: 4, messages: preparingGpt2.messages,
+    autonomous_turns: 3, next_idle_seconds: null, idle_wait_until: null, idle_wait_seconds: null});
+  await client.run("poll()");
+  assert.equal(ui["idle-wait"].hidden, true); assert.equal(ui["wait-rest"].hidden, false);
+  assert.equal(ui.continue.hidden, false); assert.equal(ui.continue.disabled, false);
+  assert.equal(ui.message.value, "Unsent draft"); assert.equal(ui.target.value, "gpt2");
+});
+
+test("real browser generation animation stops on error, pause, new chat, disconnect and pagehide; reduced motion keeps its text", async () => {
+  const initial = {...preparingGpt2, revision: 1, context_text: "Header", context_tokens: 4};
+  const client = realBrowserClient(initial, true); await client.ready;
+  const ui = client.ui;
+  assert.equal(ui["gpt2-wait"].hidden, false);
+  assert.equal(ui["gpt2-wait"].classList.contains("is-animated"), false);
+  assert.equal(ui["gpt2-wait-label"].textContent, "GPT-2 · preparing reply…");
+  let revision = 1;
+  for (const stopping of [{error: "Generation stopped"}, {paused: true}, {connected: false}, {status: "thinking"}, {active: null}]) {
+    client.receive({...initial, revision: ++revision, ...stopping}); await client.run("poll()");
+    assert.equal(ui["gpt2-wait"].hidden, true);
+    assert.equal(ui["gpt2-wait"].classList.contains("is-animated"), false);
+    client.receive({...initial, revision: ++revision}); await client.run("poll()");
+    assert.equal(ui["gpt2-wait"].hidden, false);
+  }
+  client.receive({...initial, session_id: "new-chat", revision: 1, status: "idle", active: null, messages: []});
+  await client.run("createSession()");
+  assert.equal(ui["gpt2-wait"].hidden, true);
+  client.receive({...initial, session_id: "new-chat", revision: 2}); await client.run("poll()");
+  assert.equal(ui["gpt2-wait"].hidden, false);
+  client.disconnect(); await client.run("poll()");
+  assert.equal(ui["gpt2-wait"].hidden, true);
+  assert.equal(ui["gpt2-wait"].classList.contains("is-animated"), false);
+  assert.equal(ui.continue.hidden, true);
+  assert.match(ui.status.textContent, /Connection interrupted/);
+  client.listeners.get("pagehide")();
+  assert.equal(ui["gpt2-wait"].hidden, true);
+  assert.equal(ui["gpt2-announcement"].textContent, "");
 });
 
 test("daily allowance uses settled estimates plus unresolved reservations instead of gross historical admissions", () => {

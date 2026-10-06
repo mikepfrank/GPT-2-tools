@@ -81,9 +81,15 @@
     .history-footer { min-height: 38px; display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 8px 19px; border-top: 1px solid var(--line); color: var(--muted); font-size: .74rem; }
     .history-footer button { font-size: .74rem; padding: 3px 7px; }
     .context-footer { min-height: 38px; padding: 9px 20px; border-top: 1px solid var(--line); font-size: .74rem; color: var(--muted); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px 16px; }
-    .idle-wait { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--codex); font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .wait-rest { margin-left: auto; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
-    .wait-rest button { padding: 3px 8px; font-size: .74rem; color: var(--codex); }
+    .footer-activity { display: flex; align-items: center; gap: 9px; margin-left: auto; }
+    .footer-activity button { padding: 3px 8px; font-size: .74rem; color: var(--codex); }
+    .idle-wait { display: flex; align-items: center; gap: 8px; color: var(--codex); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .gpt2-wait { display: flex; align-items: center; gap: 8px; color: var(--gpt2); white-space: nowrap; }
+    .gpt2-track { width: 62px; height: 4px; overflow: hidden; border-radius: 3px; background: var(--line); }
+    .gpt2-sweep { display: block; width: 20px; height: 100%; border-radius: inherit; background: currentColor; transform: translateX(21px); }
+    .gpt2-wait.is-animated .gpt2-sweep { animation: gpt2-sweep 1.6s ease-in-out infinite; }
+    @keyframes gpt2-sweep { from { transform: translateX(-100%); } to { transform: translateX(310%); } }
+    .wait-rest { white-space: nowrap; }
     .wait-clock { width: 11px; height: 11px; border: 1px solid currentColor; border-radius: 50%; position: relative; flex: none; }
     .wait-clock::after { content: ""; position: absolute; width: 3px; height: 3px; left: 4px; top: 2px; border-left: 1px solid currentColor; border-bottom: 1px solid currentColor; }
     .wait-track { width: 62px; height: 4px; overflow: hidden; border-radius: 3px; background: var(--line); }
@@ -132,7 +138,7 @@
       .keyboard-hint { max-width: 180px; line-height: 1.5; }
       .composer-actions button { padding: 9px 11px; }
     }
-    @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } .wait-track { display: none; } .wait-fill { transition: none !important; } }
+    @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } .wait-track { display: none; } .wait-fill { transition: none !important; } .gpt2-wait.is-animated .gpt2-sweep { animation: none; transform: translateX(21px); } }
   </style>
 </head>
 <body>
@@ -175,9 +181,13 @@
         <pre id="context" tabindex="0" aria-label="Exact current GPT-2 context">Connecting to your conversation…</pre>
         <div class="context-footer">
           <span>GPT-2 XL · original 2019 model · 1,024-token window</span>
-          <span id="idle-wait" class="idle-wait" hidden aria-hidden="true"><span class="wait-clock"></span><span id="wait-label">Next turn</span><span class="wait-track"><span id="wait-fill" class="wait-fill"></span></span></span>
-          <span id="wait-rest" class="wait-rest" hidden><span>Waiting for you</span><button id="continue" type="button" title="Let Codex and GPT-2 continue for up to three more autonomous turns." disabled>Continue</button></span>
+          <span class="footer-activity">
+            <span id="idle-wait" class="idle-wait" hidden aria-hidden="true"><span class="wait-clock"></span><span id="wait-label">Next turn</span><span class="wait-track"><span id="wait-fill" class="wait-fill"></span></span></span>
+            <span id="gpt2-wait" class="gpt2-wait" hidden aria-hidden="true"><span id="gpt2-wait-label">GPT-2 · preparing reply…</span><span class="gpt2-track"><span class="gpt2-sweep"></span></span></span>
+            <span id="wait-rest" class="wait-rest" hidden>Waiting for you</span><button id="continue" type="button" title="Start the next turn now without adding a message." hidden disabled>Continue</button>
+          </span>
           <span id="wait-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
+          <span id="gpt2-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
         </div>
       </section>
       <section class="panel" aria-labelledby="history-title">
@@ -238,8 +248,13 @@
           pending.request_id === state.last_continue_request_id);
       }
       function canContinue(state) {
-        return Boolean(state && state.status === "idle" && !state.paused && (!state.error || state.error_retryable === true) &&
-          state.next_idle_seconds === null && state.autonomous_turns >= 3);
+        if (!state || state.connected === false || state.status !== "idle" || state.paused) return false;
+        const exhausted = state.next_idle_seconds === null && state.autonomous_turns >= 3 &&
+          (!state.error || state.error_retryable === true);
+        const scheduled = !state.error && state.autonomous_turns < 3 && Number.isFinite(state.next_idle_seconds) &&
+          state.next_idle_seconds >= 0 && Number.isFinite(state.idle_wait_seconds) && state.idle_wait_seconds > 0 &&
+          state.idle_wait_seconds <= 300 && Number.isFinite(state.idle_wait_until) && state.idle_wait_until > 0;
+        return exhausted || scheduled;
       }
       function describeStatus(state) {
         if (!state) return "Connecting…";
@@ -288,11 +303,37 @@
           update(state, connected = true) {
             const previous = wait;
             wait = idleWait(wait, state, now(), connected);
-            waitingForHuman = connected && canContinue(state);
+            waitingForHuman = connected && canContinue(state) && state.next_idle_seconds === null;
             if (wait !== previous) fresh = true;
             draw();
           },
           dispose() { wait = null; waitingForHuman = false; stopTimer(); draw(); }
+        };
+      }
+      function generationActivity(state, connected = true, reducedMotion = false, previous = null) {
+        if (!connected || !state || state.connected === false || state.status !== "generating" || state.paused || state.error ||
+          !state.active || state.active.role !== "GPT-2") return {visible: false, phase: "off", animated: false};
+        const messages = Array.isArray(state.messages) ? state.messages : [];
+        const key = JSON.stringify([state.session_id, messages.length, messages.at(-1)?.id]);
+        const hasText = typeof state.active.content === "string" && Boolean(state.active.content.trim());
+        const streaming = hasText || previous && previous.key === key && previous.phase === "generating";
+        return {visible: true, key, phase: streaming ? "generating" : "preparing", animated: !reducedMotion,
+          label: streaming ? "GPT-2 · generating…" : "GPT-2 · preparing reply…",
+          title: streaming ? "GPT-2 is generating its reply; new text appears as it becomes available." :
+            "Preparing a reply from the current context; first text can take a while.",
+          announcement: streaming ? "GPT-2 is generating its reply." : "GPT-2 is preparing a reply. First text can take a while."};
+      }
+      function createGenerationActivity({render, announce, reducedMotion = () => false}) {
+        let previous = null, phase = "off";
+        return {
+          update(state, connected = true) {
+            const frame = generationActivity(state, connected, reducedMotion(), previous);
+            const nextPhase = frame.visible ? `${frame.key}:${frame.phase}` : "off";
+            render(frame);
+            if (nextPhase !== phase) { phase = nextPhase; announce(frame.announcement || ""); }
+            previous = frame;
+          },
+          dispose() { this.update(null); }
         };
       }
       function budgetText(budget) {
@@ -322,14 +363,14 @@
         if (!String(text).trim() || !Number.isFinite(value) || value < 0 || value > 2) throw new Error("Choose a temperature between 0 and 2.");
         return value;
       }
-      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, budgetText, budgetTooltip, messageTime, validateTemperature};
+      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, generationActivity, createGenerationActivity, budgetText, budgetTooltip, messageTime, validateTemperature};
     })();
   </script>
   <script>
     "use strict";
     const helpers = CodexChatHelpers;
     const element = id => document.getElementById(id);
-    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
+    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "gpt2-wait", "gpt2-wait-label", "gpt2-announcement", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
     const base = helpers.apiBase(location.href);
     const key = helpers.storageKey(location.href);
     let sessionId = readSaved("session");
@@ -349,6 +390,17 @@
         if (ui["wait-label"].textContent !== frame.label) ui["wait-label"].textContent = frame.label;
         ui["wait-fill"].style.transition = frame.smooth ? "transform .25s linear" : "none";
         ui["wait-fill"].style.transform = `scaleX(${frame.fraction})`;
+      }
+    });
+    const generationIndicator = helpers.createGenerationActivity({
+      reducedMotion: () => motionPreference.matches,
+      announce: text => { ui["gpt2-announcement"].textContent = text; },
+      render: frame => {
+        ui["gpt2-wait"].hidden = !frame.visible;
+        ui["gpt2-wait"].classList.toggle("is-animated", frame.animated);
+        if (!frame.visible) return;
+        if (ui["gpt2-wait-label"].textContent !== frame.label) ui["gpt2-wait-label"].textContent = frame.label;
+        ui["gpt2-wait"].title = frame.title;
       }
     });
 
@@ -406,6 +458,8 @@
       ui["status-dot"].classList.toggle("error", Boolean(connectionError || state && state.error));
       ui["status-dot"].classList.toggle("busy", !connectionError && helpers.isBusy(state));
       idleIndicator.update(state, !stopped && !connectionError);
+      generationIndicator.update(state, !stopped && !connectionError);
+      ui.continue.hidden = Boolean(stopped || connectionError) || !helpers.canContinue(state);
     }
     function renderContext(incoming) {
       const blocks = helpers.contextBlocks(incoming);
@@ -587,7 +641,8 @@
     ui.latest.addEventListener("click", jumpLatest);
     ui.history.addEventListener("scroll", () => { ui.latest.hidden = atBottom(ui.history); });
     window.addEventListener("pagehide", () => {
-      stopped = true; clearTimeout(timer); clearInterval(presenceTimer); idleIndicator.dispose();
+      stopped = true; clearTimeout(timer); clearInterval(presenceTimer); idleIndicator.dispose(); generationIndicator.dispose();
+      ui.continue.hidden = true; ui.continue.disabled = true;
       if (sessionId) {
         const url = new URL(endpoint("/presence"), base);
         const body = JSON.stringify({connected: false});

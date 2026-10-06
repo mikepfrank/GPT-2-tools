@@ -214,6 +214,96 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(state["autonomous_turns"], 2)
         self.assertFalse(session["pending_continue"])
 
+    def test_continue_shortens_scheduled_wait_without_renewing_remaining_allowance(self):
+        self.send()
+        self.run_action()
+        original_thread = self.app.sessions[self.identifier]["thread_id"]
+        for count, delay in ((0, 60), (1, 120), (2, 240)):
+            with self.subTest(count=count):
+                waiting = self.app.state(self.identifier, self.owner)
+                self.assertEqual(waiting["autonomous_turns"], count)
+                self.assertEqual(waiting["next_idle_seconds"], delay)
+                self.assertIsNone(self.app._due(), "the ordinary deadline has not arrived")
+                before = self.app.export(self.identifier, self.owner)
+                last_finished = self.app.sessions[self.identifier]["last_finished"]
+                request_id = f"shorten_wait_{count:04d}"
+                state = self.app.continue_activity(self.identifier, self.owner, request_id)
+                self.assertEqual(state["status"], "queued")
+                self.assertEqual(state["autonomous_turns"], count)
+                self.assertIsNone(state["next_idle_seconds"])
+                self.assertEqual(self.app.export(self.identifier, self.owner), before)
+                self.assertEqual(self.app.sessions[self.identifier]["last_finished"], last_finished)
+                self.assertEqual(list(self.app.pending), [self.identifier])
+                revision = state["revision"]
+                duplicate = self.app.continue_activity(self.identifier, self.owner, request_id)
+                self.assertEqual(duplicate["revision"], revision)
+                self.assertEqual(duplicate["autonomous_turns"], count)
+                state = self.run_action(human=False)
+                self.assertEqual(state["autonomous_turns"], count + 1)
+                self.assertEqual(self.bridge.calls[-1]["thread_id"], original_thread)
+                self.assertEqual(self.bridge.responses[-1]["remaining_visible_messages"], 2 - count)
+        self.assertEqual(self.roles(state), ["Human", "Codex", "Codex", "Codex", "Codex"])
+        self.assertIsNone(state["next_idle_seconds"])
+        self.assertIsNone(self.app._due())
+
+    def test_shortened_wait_allowance_and_deduplication_survive_queued_restart(self):
+        self.send()
+        self.run_action()
+        self.run_action(human=False)
+        before = self.app.export(self.identifier, self.owner)
+        self.app.continue_activity(self.identifier, self.owner, "shorten_durable_0001")
+        restarted = self.new_app()
+        duplicate = restarted.continue_activity(self.identifier, self.owner, "shorten_durable_0001")
+        self.assertEqual(duplicate["autonomous_turns"], 1)
+        self.assertEqual(list(restarted.pending), [])
+        self.assertEqual(restarted.export(self.identifier, self.owner), before)
+        restarted.presence(self.identifier, self.owner, True)
+        self.assertEqual(list(restarted.pending), [self.identifier])
+        finished = self.run_action(human=False, app=restarted)
+        self.assertEqual(finished["autonomous_turns"], 2)
+        completed = self.new_app()
+        state = completed.continue_activity(self.identifier, self.owner, "shorten_durable_0001")
+        self.assertEqual(state["autonomous_turns"], 2)
+        self.assertEqual(list(completed.pending), [])
+        self.assertFalse(completed.sessions[self.identifier]["pending_continue"])
+
+    def test_shortening_final_wait_reports_one_remaining_message_and_cannot_exceed_it(self):
+        self.send()
+        self.run_action()
+        self.run_action(human=False)
+        self.run_action(human=False)
+        self.app.continue_activity(self.identifier, self.owner, "shorten_final_0001")
+        self.bridge.script = [("query_gpt2", {}), ("emit_message", {"text": "No remaining slot"}), ("query_gpt2", {})]
+        self.bridge.responses.clear()
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " Final allowed reply.")) as generate:
+            state = self.run_action(human=False)
+        generate.assert_called_once()
+        self.assertEqual(state["autonomous_turns"], 3)
+        self.assertEqual(self.roles(state)[-1], "GPT-2")
+        self.assertEqual(self.bridge.responses[1]["remaining_visible_messages"], 0)
+        self.assertIn("error", self.bridge.responses[2])
+        self.assertIn("error", self.bridge.responses[3])
+        self.assertNotIn("No remaining slot", json.dumps(state))
+
+    def test_shortening_recovery_followup_retains_one_round_and_final_pause(self):
+        self.send()
+        self.run_action()
+        self.run_action(human=False)
+        session = self.app.sessions[self.identifier]
+        session.update(recovery_mode="reply_then_one_round", pending_followup_round=True)
+        self.app._save(session)
+        self.app.continue_activity(self.identifier, self.owner, "shorten_recovery_0001")
+        self.assertTrue(session["pending_followup_round"])
+        self.assertEqual(session["recovery_mode"], "reply_then_one_round")
+        self.bridge.script = [("query_gpt2", {})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " Requested final round.")) as generate:
+            state = self.run_action(human=False)
+        generate.assert_called_once()
+        self.assertEqual(state["autonomous_turns"], 3)
+        self.assertFalse(session["pending_followup_round"])
+        self.assertIsNone(session["recovery_mode"])
+        self.assertIsNone(self.app._due())
+
     def test_continue_duplicate_is_durable_and_never_requeues_while_busy_or_after_finish(self):
         self.send()
         self.run_action()

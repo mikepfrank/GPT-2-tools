@@ -182,6 +182,14 @@ class CodexChatApplication:
     def _conversation(self, session):
         return Conversation.from_record(session["conversation"])
 
+    def _scheduled_idle_delay(self, session):
+        if (self._connected(session["id"]) and not session["paused"] and not session["error"]
+                and session["autonomous_turns"] < 3 and session["last_request_id"]
+                and not session["pending_human"] and not session.get("pending_continuation")
+                and not session["pending_continue"] and session["status"] == "idle"):
+            return min(self.idle_delay * 2 ** session["autonomous_turns"], 300)
+        return None
+
     def _state(self, session):
         conversation = self._conversation(session)
         context = packed_context(conversation, self.runner.count_prompt_tokens)
@@ -195,12 +203,8 @@ class CodexChatApplication:
         messages = [dict(role=message.role, content=message.content, **metadata)
                     for message, metadata in zip(conversation.messages, session["metadata"])]
         idle_wait = idle_wait_seconds = idle_wait_until = None
-        if (self._connected(session["id"]) and not session["paused"] and not session["error"]
-                and session["autonomous_turns"] < 3 and session["last_request_id"]
-                and not session["pending_human"] and not session.get("pending_continuation")
-                and not session["pending_continue"]
-                and session["status"] == "idle"):
-            delay = min(self.idle_delay * 2 ** session["autonomous_turns"], 300)
+        delay = self._scheduled_idle_delay(session)
+        if delay is not None:
             idle_wait_seconds = delay
             idle_wait_until = session["last_finished"] + delay
             idle_wait = max(0, round(idle_wait_until - self.clock()))
@@ -285,11 +289,16 @@ class CodexChatApplication:
                 raise ChatError(413, "This chat's Continue request limit has been reached; start a new chat")
             saved_gpt2_reply = bool(session["error"] and self._conversation(session).messages
                                    and self._conversation(session).messages[-1].role == "GPT-2")
+            # Shortening an existing lull advances its remaining allowance;
+            # only resuming a stopped conversation renews all three slots.
+            shortening_wait = self._scheduled_idle_delay(session) is not None
+            continued_turns = session["autonomous_turns"] if shortening_wait else 0
             session["continue_request_ids"].append(request_id)
             session.update(last_continue_request_id=request_id, paused=False, error=None,
-                           autonomous_turns=0, epoch=session["epoch"] + 1,
+                           autonomous_turns=continued_turns, epoch=session["epoch"] + 1,
                            pending_human=False, pending_continuation=saved_gpt2_reply, pending_continue=True,
-                           recovery_mode=None, pending_followup_round=False)
+                           recovery_mode=session.get("recovery_mode") if shortening_wait else None,
+                           pending_followup_round=bool(shortening_wait and session.get("pending_followup_round")))
             self.active.pop(identifier, None)
             if self._connected(identifier):
                 self._queue(session)
@@ -462,8 +471,11 @@ class CodexChatApplication:
             with self.condition:
                 check()
                 state = self._state(self.sessions[identifier])
+                remaining = (1 if continuation else 3) - visible
+                if not human_action:
+                    remaining = min(remaining, max(0, 3 - state["autonomous_turns"]))
                 return {"context_text": state["context_text"], "context_tokens": state["context_tokens"],
-                        "recent_messages": state["messages"][-6:], "remaining_visible_messages": (1 if continuation else 3) - visible,
+                        "recent_messages": state["messages"][-6:], "remaining_visible_messages": remaining,
                         "daily_api_allowance": state["budget"]}
 
         def commit(role, content, generation=None):
