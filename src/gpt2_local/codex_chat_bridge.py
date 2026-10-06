@@ -22,6 +22,9 @@ from urllib.parse import urlsplit
 from .codex_chat_budget import DailyBudgetExceeded
 
 MAX_RPC_BYTES = 2_000_000
+# Local GPT-2 turns share this action deadline with Codex background work.
+DEFAULT_ACTION_TIMEOUT_SECONDS = 600
+MODEL_STREAM_IDLE_TIMEOUT_MS = 180_000
 TOOL_NAMES = frozenset({"emit_message", "query_gpt2", "wait_for_human", "search_web", "read_web_page"})
 PROVIDER = "gpt2_gateway"
 DISABLED_FEATURES = ("apps", "plugins", "remote_plugin", "hooks", "memories", "skill_search",
@@ -31,6 +34,10 @@ DISABLED_FEATURES = ("apps", "plugins", "remote_plugin", "hooks", "memories", "s
 
 class CodexError(RuntimeError):
     """A safe public error; raw subprocess/API errors are never included."""
+
+    def __init__(self, message, *, code="codex_error"):
+        super().__init__(message)
+        self.code = code
 
 
 def validate_message(text):
@@ -113,7 +120,7 @@ def _configuration(base_url, reasoning):
               'name = "Scoped GPT-2 Chat Gateway"', f"base_url = {json.dumps(base_url)}",
               'env_key = "GPT2_PROXY_TOKEN"', 'wire_api = "responses"',
               "requires_openai_auth = false", "request_max_retries = 0", "stream_max_retries = 0",
-              "stream_idle_timeout_ms = 60000", "supports_standalone_web_search = false",
+              f"stream_idle_timeout_ms = {MODEL_STREAM_IDLE_TIMEOUT_MS}", "supports_standalone_web_search = false",
               "supports_websockets = false"]
     return "\n".join(lines)+"\n"
 
@@ -259,7 +266,7 @@ class _RPC:
         if self.cancelled():
             raise CodexError("Codex action cancelled; the conversation is saved.")
         if time.monotonic() >= self.deadline:
-            raise CodexError("Codex action timed out; the conversation is saved.")
+            raise CodexError("Codex action timed out; the conversation is saved.", code="codex_timeout")
 
     def send(self, value):
         self.check()
@@ -270,7 +277,7 @@ class _RPC:
             self.process.stdin.write(wire)
             self.process.stdin.flush()
         except OSError as exc:
-            raise CodexError("Codex protocol connection closed.") from exc
+            raise CodexError("Codex protocol connection closed.", code="codex_connection_closed") from exc
 
     def dispatch(self):
         while True:
@@ -281,7 +288,7 @@ class _RPC:
             except queue.Empty:
                 continue
         if incoming is None:
-            raise CodexError("Codex process exited before completing the action.")
+            raise CodexError("Codex process exited before completing the action.", code="codex_process_exit")
         if isinstance(incoming, Exception):
             raise incoming
         try:
@@ -315,7 +322,7 @@ class _RPC:
 
 class CodexChatBridge:
     def __init__(self, data_dir, launcher_command, gateway, *, model="gpt-6.1-sol",
-                 reasoning="medium", timeout_seconds=180, gateway_base_url=None):
+                 reasoning="medium", timeout_seconds=DEFAULT_ACTION_TIMEOUT_SECONDS, gateway_base_url=None):
         if model != "gpt-6.1-sol" or reasoning not in {"low", "medium", "high", "xhigh", "max"}:
             raise ValueError("Unsupported Codex model or reasoning setting.")
         if (not isinstance(launcher_command, (list, tuple)) or not launcher_command

@@ -238,7 +238,7 @@
           pending.request_id === state.last_continue_request_id);
       }
       function canContinue(state) {
-        return Boolean(state && state.status === "idle" && !state.paused && !state.error &&
+        return Boolean(state && state.status === "idle" && !state.paused && (!state.error || state.error_retryable === true) &&
           state.next_idle_seconds === null && state.autonomous_turns >= 3);
       }
       function describeStatus(state) {

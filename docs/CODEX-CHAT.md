@@ -61,6 +61,15 @@ automatically. The control is deployed and verified in the real browser;
 click behavior was tested with a model-free mock. A live model action from
 this button has not been tested.
 
+Safe Codex failure notices identify timeouts, process exits, and protocol
+connection loss. Retryable failures offer **Continue** beside the notice;
+the action preserves saved replies and adds no Human message. Reloading does
+not retry a failed action automatically. Allowance/configuration/unknown
+runtime failures remain distinct and require resolving the error or a new
+Human instruction. Raw private API/subprocess errors are never displayed.
+If a saved GPT-2 reply ended the failed action, manual Continue first gives
+Codex a reply-only recovery action instead of regenerating that GPT-2 reply.
+
 Pause and loss of browser presence suspend autonomous work. The browser sends
 a presence pulse every 15 seconds; its lease lasts 45 seconds. A new Human
 message interrupts the active action. Epoch checks prevent canceled Codex
@@ -115,7 +124,9 @@ general Docker access.
 The container has a read-only root filesystem, dropped capabilities,
 `no-new-privileges`, a 768 MiB memory limit with no additional swap allowance,
 one CPU, a 96-process limit, and a 128 MiB temporary filesystem. The launcher
-enforces a 190-second lifetime; the bridge's action deadline is 180 seconds.
+enforces a 610-second lifetime; the bridge's action deadline is 600 seconds
+(ten minutes), including GPT-2 generation and private background work. API
+stream/read idle limits are 180 seconds, bounded by the overall action.
 Cleanup removes only containers carrying this application's sandbox label.
 The custom seccomp profile retains Moby v25.0.13's default rules and adds eight
 namespace/mount syscalls for unprivileged nested Bubblewrap. It grants no host
@@ -195,7 +206,9 @@ the gateway durably reserves an amount based on the normalized request's
 UTF-8 byte length, 20,000 additional input-token units, and its output
 allowance. The ledger's implemented reservation rates are $5 per million
 input units and $15 per million output tokens. Requests are limited to
-750,000 bytes and at most 4,096 output tokens.
+750,000 bytes and at most 16,384 output tokens per model response, including
+private reasoning. This ceiling is independent of each public Codex message's
+one-paragraph limit and GPT-2's 120-token generation limit.
 
 When authoritative completed usage supplies valid input/output counts, the
 ledger settles that request at the applicable tier and releases unused

@@ -1847,3 +1847,61 @@ ready/waiting status, the enabled **Continue** footer button, 12 messages, and
 no error. The screenshot remains outside the repository. The live Continue
 button was not clicked; only the model-free mock verified the action, so
 actual model behavior initiated by this control remains untested.
+
+### Codex timeout diagnosis and longer limits — October 5, 2026 CDT
+
+The next reported turn failure was the bridge's safe **Codex action timed
+out** error, hidden by the application's generic failure notice. The original
+180-second action deadline included time inside local GPT-2 tools: the first
+query in that action took about 121.6 seconds, and Codex requested a second
+query. At diagnosis, the post-reset ledger showed **$0.148704 charged/held**
+and **zero unresolved holds**, so the failure was not the $10 allowance cap.
+These are this application's ledger figures, not a provider invoice.
+
+At the owner's request, the bridge and scoped gateway now permit **600
+seconds**, the independent sandbox launcher permits **610 seconds**, and
+both the API read-idle and Codex stream-idle waits permit **180 seconds**.
+Private per-response output/reasoning permits **16,384 tokens**, up from
+4,096. The public Codex paragraph limit, original GPT-2's 120-token limit,
+resource isolation, pricing calculation, and $10 UTC daily cap remain intact.
+
+Safe Codex timeout/process-exit/connection-loss causes reach the UI with
+structured retryability. Unknown private failures remain redacted. Explicit
+Continue can recover from a saved GPT-2 reply without regenerating it;
+terminal errors do not requeue accepted Human work on reload. Unstarted queue
+entries may resume, while interrupted thinking/generating work requires an
+explicit retry. Error lifecycle handling was checked against the
+[official app-server documentation](https://learn.chatgpt.com/docs/app-server#errors).
+
+The focused Linux discovery of `test_codex_chat*.py` passed **139 tests in
+14.415 seconds**, including the real Bash stdin/lifetime checks, and all
+**24 Node frontend tests passed**. Tests use fake models, local mock API
+connections, fake clocks, and temporary ledgers. They verify ten-minute
+scope expiry, 610-second launcher consistency, 180-second stream/read-idle
+configuration, 16,384-token forwarding/reservation/boundary enforcement,
+unchanged historical admissions and monetary cap, cause redaction, manual
+retry, and no automatic retry on reload. The owner-requested reply-only
+recovery followed by one extra GPT-2 round is tested with a 120-second pause;
+the follow-up enforces one query and stops even if Codex omits its wait tool.
+No development model calls or live allowance reset were made.
+
+The owner continued interacting while this update was prepared. The saved
+GPT-2 reply already received a Codex response and a later GPT-2 round; a newer
+Human message superseded the earlier recovery request. Those messages were
+preserved instead of replaying the older state. Deployment waited for idle,
+briefly paused autonomous activity, backed up private SQLite/source/launcher
+state, and restarted only the beta. All **seven chat records**, **30 current
+messages**, metadata, native thread, ownership, settings, Human/Continue IDs,
+autonomous count and last-finished time matched the checkpoint. The temporary
+pause was lifted directly without resetting the count or countdown deadline.
+Both admission/reset tables matched their backups exactly.
+
+All six updated runtime source hashes and the root-owned launcher matched
+the tested release. Beta certified HTTPS health and all four existing
+public/chess health routes returned 200; their four service PIDs were
+unchanged. The refreshed browser showed 30 messages, an enabled composer,
+no error, and the active draining countdown. Its draft/recipient were
+preserved; the screenshot is private outside the repository. The ten-minute
+wall-clock limit was verified with model-free tests rather than a deliberately
+long live action, and the special one-round recovery mode was not needed live
+because the newer conversation had already progressed.

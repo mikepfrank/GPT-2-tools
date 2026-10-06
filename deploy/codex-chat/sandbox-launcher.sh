@@ -20,7 +20,8 @@ cleanup() { /usr/bin/docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
 cleanup
-/usr/bin/timeout --signal=TERM --kill-after=5s 190s /usr/bin/docker run --rm --interactive --stop-timeout 5 --name "$name" \
+# Allow the bridge's 600-second action deadline plus 10 seconds for cleanup.
+/usr/bin/timeout --signal=TERM --kill-after=5s 610s /usr/bin/docker run --rm --interactive --stop-timeout 5 --name "$name" \
   --label io.gpt2-codex=sandbox \
   --network gpt2-codex-isolated --user 1015:1018 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \

@@ -7,8 +7,16 @@ import shutil
 import subprocess
 import unittest
 
+from gpt2_local.codex_chat_bridge import DEFAULT_ACTION_TIMEOUT_SECONDS
+
 
 class SandboxLauncherTests(unittest.TestCase):
+    def test_independent_sandbox_deadline_allows_bridge_cleanup(self):
+        launcher = (Path(__file__).resolve().parents[1] / "deploy" / "codex-chat" / "sandbox-launcher.sh").read_text()
+        timeout = re.search(r"/usr/bin/timeout --signal=TERM --kill-after=5s (\d+)s /usr/bin/docker run", launcher)
+        self.assertIsNotNone(timeout, "Cannot locate the sandbox's independent timeout")
+        self.assertEqual(int(timeout.group(1)), DEFAULT_ACTION_TIMEOUT_SECONDS + 10)
+
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Requires a Linux Bash shell")
     def test_background_app_server_retains_json_rpc_stdin(self):
         launcher = (Path(__file__).resolve().parents[1] / "deploy" / "codex-chat" / "sandbox-launcher.sh").read_text()

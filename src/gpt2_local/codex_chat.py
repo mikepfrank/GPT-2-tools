@@ -31,6 +31,7 @@ COOKIE_RE = re.compile(r"^[a-f0-9]{64}$")
 MAX_BODY = 65536
 MAX_MESSAGES = 10000
 MAX_SESSIONS = 64
+RETRYABLE_CODEX_ERRORS = frozenset({"codex_timeout", "codex_connection_closed", "codex_process_exit", "turn_interrupted"})
 
 
 class ChatError(ValueError):
@@ -114,14 +115,23 @@ class CodexChatApplication:
         self.running: str | None = None
         self.closed = False
         for session in self.sessions.values():
-            if session["status"] in {"thinking", "generating", "queued"}:
-                session.update(status="idle", error="The previous turn was interrupted; your chat was preserved.")
+            if session["status"] in {"thinking", "generating"}:
+                session.update(status="idle", error="The previous turn was interrupted; your chat was preserved.",
+                               error_code="turn_interrupted", pending_human=False,
+                               pending_continuation=False, pending_continue=False, autonomous_turns=3)
+            elif session["status"] == "queued":
+                # Accepted but unstarted work may resume. Partially completed
+                # thinking/generating work above requires an explicit retry.
+                session.update(status="idle", error=None, error_code=None)
             session["epoch"] += 1
             session.setdefault("pending_human", False)
             session.setdefault("pending_continuation", False)
             session.setdefault("pending_continue", False)
             session.setdefault("continue_request_ids", [])
             session.setdefault("last_continue_request_id", None)
+            session.setdefault("error_code", None)
+            session.setdefault("recovery_mode", None)
+            session.setdefault("pending_followup_round", False)
             self._save(session)
         self.worker = None
         if start_worker:
@@ -157,7 +167,8 @@ class CodexChatApplication:
                            request_ids=[], last_request_id=None, thread_id=None, last_prompt_index=0,
                            last_processed_epoch=0, pending_human=False, pending_continuation=False,
                            pending_continue=False, continue_request_ids=[], last_continue_request_id=None,
-                           target="auto", error=None)
+                           target="auto", error=None, error_code=None,
+                           recovery_mode=None, pending_followup_round=False)
             self.sessions[identifier] = session
             self.live[identifier] = now
             self._save(session)
@@ -195,7 +206,12 @@ class CodexChatApplication:
                     history_truncated=len(messages) > 1000, status=session["status"], paused=session["paused"],
                     autonomous_turns=session["autonomous_turns"], next_idle_seconds=idle_wait,
                     idle_wait_seconds=idle_wait_seconds, idle_wait_until=idle_wait_until,
-                    active=public_active, error=session["error"], settings=session["settings"], budget=budget,
+                    active=public_active, error=session["error"],
+                    error_code=session.get("error_code") if session["error"] else None,
+                    error_retryable=bool(session["error"] and session.get("error_code") in RETRYABLE_CODEX_ERRORS
+                                         and not session["pending_human"] and not session["pending_continue"]
+                                         and session["status"] == "idle" and not session["paused"]),
+                    settings=session["settings"], budget=budget,
                     connected=self._connected(session["id"]), last_request_id=session["last_request_id"],
                     last_continue_request_id=session["last_continue_request_id"])
 
@@ -235,6 +251,8 @@ class CodexChatApplication:
                            autonomous_turns=0, pending_human=True, target=target, error=None)
             session["pending_continuation"] = False
             session["pending_continue"] = False
+            session["recovery_mode"] = None
+            session["pending_followup_round"] = False
             self.live[identifier] = self.clock()
             self.active.pop(identifier, None)
             if not session["paused"]:
@@ -252,16 +270,21 @@ class CodexChatApplication:
                 return self._state(session)
             if not session["last_request_id"]:
                 raise ChatError(409, "Send a Human message before continuing this chat")
+            if session["error"] and session.get("error_code") not in RETRYABLE_CODEX_ERRORS:
+                raise ChatError(409, "Resolve this turn's error before continuing, or send a new Human message")
             if (session["pending_human"] or session["pending_continue"]
                     or session["status"] not in {"idle", "error"}
                     or identifier in self.pending or self.running == identifier):
                 raise ChatError(409, "Wait for the accepted turn to finish before continuing")
             if len(session["continue_request_ids"]) >= MAX_MESSAGES:
                 raise ChatError(413, "This chat's Continue request limit has been reached; start a new chat")
+            saved_gpt2_reply = bool(session["error"] and self._conversation(session).messages
+                                   and self._conversation(session).messages[-1].role == "GPT-2")
             session["continue_request_ids"].append(request_id)
             session.update(last_continue_request_id=request_id, paused=False, error=None,
                            autonomous_turns=0, epoch=session["epoch"] + 1,
-                           pending_human=False, pending_continuation=False, pending_continue=True)
+                           pending_human=False, pending_continuation=saved_gpt2_reply, pending_continue=True,
+                           recovery_mode=None, pending_followup_round=False)
             self.active.pop(identifier, None)
             if self._connected(identifier):
                 self._queue(session)
@@ -363,7 +386,7 @@ class CodexChatApplication:
                 human_action = session["pending_human"]
                 epoch = session["epoch"]
                 self.running = identifier
-                session.update(status="thinking", error=None)
+                session.update(status="thinking", error=None, error_code=None)
                 self._save(session)
             completed = False
             try:
@@ -375,11 +398,13 @@ class CodexChatApplication:
                 from .codex_chat_bridge import CodexError
                 diagnostic = str(exc) if isinstance(exc, (CodexError, ChatError)) else "Private runtime failure"
                 print(f"Codex chat action: {type(exc).__name__}: {diagnostic}", file=sys.stderr, flush=True)
-                # Bridge/generation exceptions may include private runtime data.
+                # CodexError is explicitly a safe public bridge error. Other
+                # runtime/generation exceptions may contain private data.
                 with self.condition:
                     session = self.sessions[identifier]
                     if session["epoch"] == epoch and self._connected(identifier) and not session["paused"]:
                         if isinstance(exc, DailyBudgetExceeded):
+                            error_code = "daily_allowance_exhausted"
                             message = ("The daily Codex allowance cannot cover the next request. Your chat was saved. "
                                        "Continue after the UTC daily reset or ask the operator to raise the allowance.")
                             # A terminal allowance failure must not silently retry
@@ -389,9 +414,13 @@ class CodexChatApplication:
                             session["last_prompt_index"] = len(self._conversation(session).messages)
                         else:
                             session["pending_continuation"] = False
-                            message = str(exc) if isinstance(exc, ChatError) else "This turn could not finish. Your chat was preserved; send a message to retry."
+                            message = str(exc) if isinstance(exc, (CodexError, ChatError)) else "This turn could not finish. Your chat was preserved; send a message to retry."
+                            error_code = exc.code if isinstance(exc, CodexError) else "chat_error" if isinstance(exc, ChatError) else "runtime_error"
+                        # A terminal failure is settled until an explicit Human
+                        # action. Reconnect must not replay the accepted message.
+                        session["pending_human"] = False
                         session["pending_continue"] = False
-                        session.update(error=message, autonomous_turns=3)
+                        session.update(error=message, error_code=error_code, autonomous_turns=3)
             finally:
                 with self.condition:
                     session = self.sessions[identifier]
@@ -413,6 +442,7 @@ class CodexChatApplication:
         with self.condition:
             continuation = bool(self.sessions[identifier].get("pending_continuation"))
             requested_continue = self.sessions[identifier]["pending_continue"]
+            requested_followup = bool(self.sessions[identifier].get("pending_followup_round")) and not human_action and not continuation
 
         def cancelled():
             with self.condition:
@@ -449,6 +479,13 @@ class CodexChatApplication:
                     # A visible recovery reply is durable even if its transport
                     # subsequently disconnects; never replay that contribution.
                     session["pending_continuation"] = False
+                    if session.get("recovery_mode") == "reply_then_one_round":
+                        session["pending_followup_round"] = True
+                elif requested_followup and role == "GPT-2":
+                    # The requested round is already saved. A reconnect must
+                    # never query GPT-2 again to repeat that contribution.
+                    session["pending_followup_round"] = False
+                    session["recovery_mode"] = None
                 if requested_continue:
                     # The requested action has visibly taken place; reconnecting
                     # must not replay it if the private turn later disconnects.
@@ -487,7 +524,7 @@ class CodexChatApplication:
                     return {"error": "GPT-2's reply is already saved. Respond to it or wait_for_human; do not repeat its turn."}
                 if args:
                     return {"error": "query_gpt2 takes no arguments"}
-                if query_count >= 2 or visible >= 3:
+                if query_count >= (1 if requested_followup else 2) or visible >= 3:
                     return {"error": "This action's GPT-2 query limit has been reached"}
                 with self.condition:
                     check()
@@ -540,10 +577,20 @@ class CodexChatApplication:
             new_messages = [dict(role=message.role, content=message.content)
                             for message in conversation.messages[session["last_prompt_index"]:]]
             event = ("Resume the interrupted action after the already saved GPT-2 reply. "
-                     "The allowance has been reset. Decide whether to emit a brief response to GPT-2 "
+                     "Decide whether to emit a brief response to GPT-2 "
                      "or wait_for_human; do not repeat any earlier Human or GPT-2 turn."
                      if continuation else ("Human requested continuing the conversation without adding a message"
                                            if requested_continue else ("Human message" if human_action else "Conversation lull")))
+            if continuation and session.get("recovery_mode") == "reply_then_one_round":
+                event = ("The Human requested resuming after the interrupted action's saved GPT-2 reply. "
+                         "Emit one brief response to that reply, then finish this action without querying GPT-2 "
+                         "or calling wait_for_human. Leave the ordinary autonomous pause enabled. "
+                         "After that pause, the Human requested one more GPT-2 round, optionally followed by "
+                         "a brief Codex reply, then wait for the Human. Do not repeat any saved message.")
+            elif requested_followup:
+                event = ("The normal autonomous pause after the recovery reply has elapsed. "
+                         "The Human requested one more GPT-2 round: query GPT-2 once, optionally reply briefly, "
+                         "then wait_for_human. Do not repeat any earlier saved message.")
             prompt = (AGENT_POLICY + "\nEvent: " + event
                       + "\nHuman recipient preference: " + session["target"]
                       + "\nNew messages since previous action:\n" + json.dumps(new_messages, ensure_ascii=False)
@@ -556,7 +603,11 @@ class CodexChatApplication:
             session["thread_id"] = result["thread_id"]
             session["last_prompt_index"] = len(self._conversation(session).messages)
             session["pending_continue"] = False
-            if not human_action and visible == 0 and not waited:
+            if requested_followup:
+                session["pending_followup_round"] = False
+                session["recovery_mode"] = None
+                session["autonomous_turns"] = 3
+            if not human_action and visible == 0 and not waited and not requested_followup:
                 session["autonomous_turns"] += 1
             self._save(session)
 

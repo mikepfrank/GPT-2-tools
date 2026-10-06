@@ -17,6 +17,7 @@ from gpt2_local.codex_chat import (
 )
 from gpt2_local.codex_chat_context import Message
 from gpt2_local.codex_chat_budget import DailyBudgetExceeded
+from gpt2_local.codex_chat_bridge import CodexError
 
 
 class FakeClock:
@@ -185,7 +186,8 @@ class OrchestrationTests(unittest.TestCase):
         self.run_action()
         self.app.control(self.identifier, self.owner, True)
         session = self.app.sessions[self.identifier]
-        session.update(error="A previous turn failed.", autonomous_turns=3)
+        session.update(error="Codex action timed out; the conversation is saved.",
+                       error_code="codex_timeout", autonomous_turns=3)
         before = self.app.export(self.identifier, self.owner)
         original_thread = session["thread_id"]
         human_ids = list(session["request_ids"])
@@ -263,7 +265,7 @@ class OrchestrationTests(unittest.TestCase):
         restarted = self.new_app()
         retried = restarted.continue_activity(self.identifier, self.owner, "continue_0001")
         self.assertEqual(retried["status"], "idle")
-        self.assertIsNotNone(retried["error"])
+        self.assertIsNone(retried["error"], "Unstarted accepted work is not a failed action")
         self.assertEqual(list(restarted.pending), [])
         restarted.presence(self.identifier, self.owner, True)
         self.assertEqual(list(restarted.pending), [self.identifier])
@@ -329,7 +331,7 @@ class OrchestrationTests(unittest.TestCase):
         self.run_action()
         self.app.continue_activity(self.identifier, self.owner, "continue_0001")
         def fail(tool, cancelled):
-            raise RuntimeError("Private error must not enter public state")
+            raise CodexError("Codex action timed out; the conversation is saved.", code="codex_timeout")
         self.bridge.script = fail
         self.app.worker = threading.Thread(target=self.app._work, daemon=True)
         with redirect_stderr(io.StringIO()):
@@ -343,8 +345,9 @@ class OrchestrationTests(unittest.TestCase):
         state = self.app.state(self.identifier, self.owner)
         self.assertFalse(self.app.sessions[self.identifier]["pending_continue"])
         self.assertEqual(state["autonomous_turns"], 3)
-        self.assertIn("Your chat was preserved", state["error"])
-        self.assertNotIn("Private error", json.dumps(state))
+        self.assertIn("timed out", state["error"])
+        self.assertEqual(state["error_code"], "codex_timeout")
+        self.assertTrue(state["error_retryable"])
         self.app.presence(self.identifier, self.owner, False)
         self.app.presence(self.identifier, self.owner, True)
         self.assertEqual(list(self.app.pending), [])
@@ -355,8 +358,25 @@ class OrchestrationTests(unittest.TestCase):
         restarted.presence(self.identifier, self.owner, True)
         state = restarted.continue_activity(self.identifier, self.owner, "continue_0002")
         self.assertIsNone(state["error"])
+        self.assertIsNone(state["error_code"])
+        self.assertFalse(state["error_retryable"])
         self.assertEqual(state["autonomous_turns"], 0)
         self.assertEqual(state["status"], "queued")
+
+    def test_continue_rejects_budget_configuration_and_unknown_errors(self):
+        self.send()
+        self.run_action()
+        session = self.app.sessions[self.identifier]
+        before = self.app.export(self.identifier, self.owner)
+        for code in ("daily_allowance_exhausted", "codex_error", "runtime_error", None):
+            with self.subTest(code=code):
+                session.update(error="A saved terminal error", error_code=code, autonomous_turns=3)
+                self.assertFalse(self.app.state(self.identifier, self.owner)["error_retryable"])
+                with self.assertRaises(ChatError) as raised:
+                    self.app.continue_activity(self.identifier, self.owner, "blocked_continue_001")
+                self.assertEqual(raised.exception.status, 409)
+                self.assertEqual(self.app.export(self.identifier, self.owner), before)
+                self.assertEqual(list(self.app.pending), [])
 
     def test_continue_request_validation_and_limit_do_not_prune_deduplication(self):
         self.send()
@@ -534,6 +554,136 @@ class OrchestrationTests(unittest.TestCase):
         self.clock.now += 1000
         self.assertIsNone(self.app._due())
         self.assertEqual(len(self.bridge.calls), 1)
+
+    def test_requested_recovery_reply_then_one_round_waits_without_replaying_gpt2(self):
+        self.send("GPT-2, your turn", target="gpt2")
+        self.bridge.script = [("query_gpt2", {})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " Saved reply.")):
+            self.run_action()
+        session = self.app.sessions[self.identifier]
+        original_thread = session["thread_id"]
+        session.update(pending_continuation=True, recovery_mode="reply_then_one_round",
+                       pending_followup_round=False, autonomous_turns=0)
+        self.bridge.script = [("query_gpt2", {}), ("emit_message", {"text": "A reply to the saved message."})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply") as generate:
+            state = self.run_action(human=False)
+        generate.assert_not_called()
+        self.assertEqual(self.roles(state), ["Human", "GPT-2", "Codex"])
+        self.assertEqual(state["autonomous_turns"], 1)
+        self.assertEqual(state["next_idle_seconds"], 120)
+        self.assertTrue(session["pending_followup_round"])
+        self.assertIn("Emit one brief response", self.bridge.calls[-1]["prompt"])
+        self.clock.now += 119
+        self.app.presence(self.identifier, self.owner, True)
+        self.assertIsNone(self.app._due())
+        self.clock.now += 1
+        self.assertEqual(self.app._due(), self.identifier)
+        self.bridge.script = [("query_gpt2", {}), ("query_gpt2", {}),
+                              ("emit_message", {"text": "Thanks for the new round."})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " One new round.")) as generate:
+            state = self.run_action(human=False)
+        generate.assert_called_once()
+        self.assertEqual(self.roles(state), ["Human", "GPT-2", "Codex", "GPT-2", "Codex"])
+        self.assertEqual(session["thread_id"], original_thread)
+        self.assertFalse(session["pending_followup_round"])
+        self.assertIsNone(session["recovery_mode"])
+        self.assertIsNone(self.app._due())
+        self.assertIn("query GPT-2 once", self.bridge.calls[-1]["prompt"])
+        self.assertTrue(any("query limit" in item.get("error", "") for item in self.bridge.responses))
+
+    def test_interrupted_human_action_requires_manual_reply_only_recovery(self):
+        self.send("GPT-2, go first", target="gpt2")
+        self.bridge.script = [("query_gpt2", {})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " Already saved.")):
+            self.run_action()
+        session = self.app.sessions[self.identifier]
+        session.update(status="generating", pending_human=True)
+        self.app._save(session)
+        restarted = self.new_app()
+        restarted.presence(self.identifier, self.owner, True)
+        state = restarted.state(self.identifier, self.owner)
+        self.assertEqual(state["error_code"], "turn_interrupted")
+        self.assertTrue(state["error_retryable"])
+        self.assertEqual(list(restarted.pending), [])
+        self.assertIsNone(restarted._due())
+        restarted.continue_activity(self.identifier, self.owner, "explicit_interrupted_retry_001")
+        self.assertTrue(restarted.sessions[self.identifier]["pending_continuation"])
+        restarted.bridge.script = [("query_gpt2", {}), ("emit_message", {"text": "A reply to the saved GPT-2."})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply") as generate:
+            state = self.run_action(human=False, app=restarted)
+        generate.assert_not_called()
+        self.assertEqual(self.roles(state), ["Human", "GPT-2", "Codex"])
+        self.assertEqual(restarted.sessions[self.identifier]["thread_id"], session["thread_id"])
+
+    def test_worker_preserves_safe_failure_causes_and_redacts_unknown_errors(self):
+        cases = (
+            (CodexError("Codex action timed out; the conversation is saved.", code="codex_timeout"),
+             "Codex action timed out; the conversation is saved."),
+            (CodexError("Codex process exited before completing the action.", code="codex_process_exit"),
+             "Codex process exited before completing the action."),
+            (ChatError(503, "Chat generation is temporarily unavailable."),
+             "Chat generation is temporarily unavailable."),
+            (RuntimeError("sk-PRIVATE-runtime-credential"),
+             "This turn could not finish. Your chat was preserved; send a message to retry."),
+        )
+        for failure, expected in cases:
+            with self.subTest(failure=type(failure).__name__, expected=expected), tempfile.TemporaryDirectory() as directory:
+                bridge = FakeBridge()
+                app = CodexChatApplication(FakeRunner(), bridge, FakeLedger(), Path(directory),
+                                           clock=self.clock, start_worker=False)
+                try:
+                    identifier = app.create(self.owner, examples=0)["session_id"]
+                    app.message(identifier, self.owner, "Please reply", "codex", "failure_request_001")
+
+                    def fail_after_reply(tool, cancelled):
+                        tool("emit_message", {"text": "A saved reply."})
+                        raise failure
+
+                    bridge.script = fail_after_reply
+                    app.worker = threading.Thread(target=app._work, daemon=True)
+                    diagnostics = io.StringIO()
+                    with redirect_stderr(diagnostics):
+                        app.worker.start()
+                        deadline = time.monotonic() + 3
+                        with app.condition:
+                            while app.sessions[identifier]["status"] != "idle":
+                                if time.monotonic() >= deadline:
+                                    self.fail("Worker did not finish the failure")
+                                app.condition.wait(.01)
+                    state = app.state(identifier, self.owner)
+                    self.assertEqual(self.roles(state), ["Human", "Codex"])
+                    self.assertEqual(state["messages"][-1]["content"], " A saved reply.")
+                    self.assertEqual(state["error"], expected)
+                    self.assertFalse(app.sessions[identifier]["pending_human"])
+                    self.assertEqual(state["error_retryable"], isinstance(failure, CodexError))
+                    self.assertEqual(state["autonomous_turns"], 3)
+                    self.assertIsNone(state["next_idle_seconds"])
+                    self.assertNotIn("sk-PRIVATE-runtime-credential", json.dumps(state))
+                    self.assertNotIn("sk-PRIVATE-runtime-credential", diagnostics.getvalue())
+                    if isinstance(failure, (CodexError, ChatError)):
+                        self.assertIn(expected, diagnostics.getvalue())
+                    app.close()
+
+                    restarted = CodexChatApplication(FakeRunner(), FakeBridge(), FakeLedger(), Path(directory),
+                                                     clock=self.clock, start_worker=False)
+                    try:
+                        restored = restarted.state(identifier, self.owner)
+                        self.assertEqual(restored["error"], expected)
+                        self.assertEqual(restored["messages"], state["messages"])
+                        self.assertEqual(restored["budget"], state["budget"])
+                        restarted.presence(identifier, self.owner, True)
+                        self.assertEqual(list(restarted.pending), [])
+                        self.assertIsNone(restarted._due())
+                        if isinstance(failure, CodexError):
+                            retry = restarted.continue_activity(identifier, self.owner, "explicit_timeout_retry_001")
+                            self.assertIsNone(retry["error"])
+                            self.assertEqual(retry["messages"], state["messages"])
+                            self.assertEqual(restarted.sessions[identifier]["thread_id"], app.sessions[identifier]["thread_id"])
+                            self.assertEqual(list(restarted.pending), [identifier])
+                    finally:
+                        restarted.close()
+                finally:
+                    app.close()
 
     def test_invalid_codex_messages_tools_and_settings_do_not_mutate_history(self):
         self.send()

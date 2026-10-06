@@ -7,9 +7,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
-from gpt2_local.codex_chat_budget import DailyBudgetLedger
-from gpt2_local.codex_chat_gateway import CodexAPIGateway, GatewayPolicyError, _UsageReader, validate_request
+from gpt2_local.codex_chat_budget import DailyBudgetLedger, MAX_OUTPUT_TOKENS
+from gpt2_local.codex_chat_gateway import (CodexAPIGateway, GatewayPolicyError, MAX_ACTION_SECONDS,
+                                         UPSTREAM_IDLE_TIMEOUT_SECONDS, _UsageReader, validate_request)
 
 
 class FakeResponse:
@@ -65,10 +67,39 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(args, ("POST","/v1/responses"))
         self.assertEqual(kwargs["headers"]["Authorization"],"Bearer operator-test-secret")
         body = json.loads(kwargs["body"])
-        self.assertEqual(body["max_output_tokens"],4096)
+        self.assertEqual(body["max_output_tokens"],MAX_OUTPUT_TOKENS)
         self.assertFalse(body["store"])
         self.assertEqual(self.ledger.snapshot()["requests"],1)
         self.assertEqual(self.ledger.snapshot()["unknown_usage_requests"],0)
+
+    def test_default_upstream_connection_allows_180_second_read_gaps_without_connecting(self):
+        self.assertEqual(UPSTREAM_IDLE_TIMEOUT_SECONDS, 180)
+        with mock.patch("gpt2_local.codex_chat_gateway.http.client.HTTPSConnection") as connection:
+            gateway = CodexAPIGateway("private-test-credential", self.ledger)
+            self.assertIs(gateway._connection_factory(), connection.return_value)
+            connection.assert_called_once_with("api.openai.com", timeout=180)
+            connection.return_value.connect.assert_not_called()
+            connection.return_value.request.assert_not_called()
+
+    def test_default_scope_last_for_600_seconds_and_expires_at_the_bound(self):
+        self.assertEqual(MAX_ACTION_SECONDS, 600)
+        with mock.patch("gpt2_local.codex_chat_gateway.time.monotonic", return_value=1000) as clock, \
+                mock.patch("gpt2_local.codex_chat_gateway.threading.Timer") as timer:
+            token = self.gateway.activate("default-deadline")
+            try:
+                scope = self.gateway._scopes[token]
+                self.assertEqual(scope.expires, 1600)
+                timer.assert_called_once_with(600, self.gateway.revoke, args=(token,))
+                timer.return_value.start.assert_called_once_with()
+                clock.return_value = 1599.99
+                self.assertIs(self.gateway._scope("Bearer " + token), scope)
+                clock.return_value = 1600
+                self.assertIsNone(self.gateway._scope("Bearer " + token))
+                with self.assertRaises(ValueError):
+                    self.gateway.activate("over-bound", timeout_seconds=601)
+            finally:
+                self.gateway.revoke(token)
+            timer.return_value.cancel.assert_called_once_with()
 
     def test_streaming_usage_is_extracted_without_altering_sse(self):
         self.gateway._connection_factory = lambda: FakeConnection(self.calls, streaming=True)
@@ -114,7 +145,7 @@ class GatewayTests(unittest.TestCase):
     def test_hidden_context_modalities_prices_and_output_are_rejected(self):
         invalid = [{"previous_response_id":"opaque"},{"conversation":"opaque"},
                    {"model":"gpt-6-astra"},{"service_tier":"priority"},
-                   {"max_output_tokens":4097},{"max_output_tokens":True},
+                   {"max_output_tokens":MAX_OUTPUT_TOKENS+1},{"max_output_tokens":True},
                    {"tools":[{"type":[]}]},{"reasoning":{"effort":[]}},
                    {"input":[{"type":"input_image","image_url":"https://example.com/a.png"}]},
                    {"store":True},{"background":True}]
@@ -135,19 +166,41 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(normalized["input"],body["input"])
         self.assertEqual(normalized["tools"],body["tools"])
         self.assertEqual(normalized["reasoning"],body["reasoning"])
-        self.assertEqual(normalized["max_output_tokens"],4096)
+        self.assertEqual(normalized["max_output_tokens"],MAX_OUTPUT_TOKENS)
         self.assertEqual(normalized["service_tier"],"default")
         self.assertEqual(self.request(body)[0],200)
         self.assertNotIn("client_metadata",json.loads(self.calls[0][1]["body"]))
 
     def test_client_metadata_cannot_bypass_request_policy(self):
-        metadata={"model":"gpt-6.1-sol","max_output_tokens":4096,"service_tier":"default"}
+        metadata={"model":"gpt-6.1-sol","max_output_tokens":MAX_OUTPUT_TOKENS,"service_tier":"default"}
         for change in ({"previous_response_id":"opaque"},{"model":"gpt-6-astra"},
-                       {"max_output_tokens":4097},{"service_tier":"priority"},
+                       {"max_output_tokens":MAX_OUTPUT_TOKENS+1},{"service_tier":"priority"},
                        {"tools":[{"type":"web_search"}]}):
             body={"model":"gpt-6.1-sol","input":"x","client_metadata":metadata,**change}
             with self.subTest(change=change),self.assertRaises(GatewayPolicyError):
                 validate_request(json.dumps(body).encode())
+
+    def test_expanded_output_limit_is_forwarded_reserved_and_enforced_without_reset(self):
+        self.assertEqual(MAX_OUTPUT_TOKENS, 16384)
+        for output in (4096, MAX_OUTPUT_TOKENS):
+            with self.subTest(output=output):
+                self.assertEqual(self.request({"model":"gpt-6.1-sol","input":"Hello",
+                                              "max_output_tokens":output})[0], 200)
+                encoded = self.calls[-1][1]["body"]
+                self.assertEqual(json.loads(encoded)["max_output_tokens"], output)
+                with closing(self.ledger._connect()) as connection:
+                    row = connection.execute("SELECT max_output_tokens,reserved_micros FROM api_admissions ORDER BY rowid DESC LIMIT 1").fetchone()
+                self.assertEqual(row["max_output_tokens"], output)
+                self.assertEqual(row["reserved_micros"], self.ledger.estimate_micros(len(encoded), output))
+        before = self.ledger.snapshot()
+        self.assertEqual(before["daily_limit_usd"], 10)
+        self.assertEqual(before["requests"], 2)
+        self.assertEqual(self.request({"model":"gpt-6.1-sol","input":"Hello",
+                                      "max_output_tokens":MAX_OUTPUT_TOKENS+1})[0], 400)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.ledger.snapshot(), before)
+        with closing(self.ledger._connect()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM budget_resets").fetchone()[0], 0)
 
     def test_cancellation_shuts_down_socket_and_worker_alone_closes(self):
         entered=threading.Event()

@@ -18,6 +18,8 @@ import time
 from .codex_chat_budget import DailyBudgetExceeded, MAX_OUTPUT_TOKENS, MAX_REQUEST_BYTES
 
 MODEL = "gpt-6.1-sol"
+UPSTREAM_IDLE_TIMEOUT_SECONDS = 180
+MAX_ACTION_SECONDS = 600
 ALLOWED_FIELDS = frozenset({
     "model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls",
     "reasoning", "text", "stream", "store", "include", "metadata", "prompt_cache_key",
@@ -186,15 +188,15 @@ class CodexAPIGateway:
         self._lock = threading.RLock()
         self._slots = threading.BoundedSemaphore(4)
         self._connection_factory = connection_factory or (
-            lambda: http.client.HTTPSConnection("api.openai.com", timeout=30))
+            lambda: http.client.HTTPSConnection("api.openai.com", timeout=UPSTREAM_IDLE_TIMEOUT_SECONDS))
         self._server = self._thread = None
 
     @property
     def base_url(self):
         return f"http://{self.host}:{self.port}/v1"
 
-    def activate(self, session_id, timeout_seconds=180):
-        if not 0 < timeout_seconds <= 600:
+    def activate(self, session_id, timeout_seconds=MAX_ACTION_SECONDS):
+        if not 0 < timeout_seconds <= MAX_ACTION_SECONDS:
             raise ValueError("Invalid gateway action deadline.")
         token = secrets.token_urlsafe(32)
         scope = _Scope(str(session_id), time.monotonic()+timeout_seconds)

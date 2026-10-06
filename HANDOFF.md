@@ -106,6 +106,20 @@ messages; the live browser shows Continue enabled with no error. Health/PIDs
 remain unchanged. Continue was clicked only in the mock; live model action
 from that control has not been tested. No development model charges were made.
 
+The next user failure was a Codex action timeout, not an allowance rejection:
+two near-full GPT-2 turns exceeded the original three-minute bridge deadline.
+The owner requested substantially higher limits. The bridge now allows ten
+minutes, the independent launcher allows 610 seconds, stream/read idle waits
+allow 180 seconds, and per-response private output/reasoning is capped at
+16,384 tokens instead of 4,096. Public messages and the $10 UTC allowance keep
+their prior limits. Safe failure causes reach the UI; timeouts/process exits/
+connection loss offer explicit Continue. Failed actions do not retry on
+reload. An interrupted active Human action requires explicit recovery, while
+unstarted accepted queue entries may resume. Reply-only recovery preserves
+already saved GPT-2 output. The owner's requested recovery response followed
+by one further GPT-2 round uses the normal two-minute pause and a bounded
+one-query follow-up; a new Human message supersedes that sequence.
+
 ## Public-service development
 
 Public-service work lives in `codex/gpt2-public`, branched from chat tip

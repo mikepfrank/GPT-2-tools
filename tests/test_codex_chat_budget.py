@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from gpt2_local.codex_chat_budget import DailyBudgetLedger, DailyBudgetExceeded
+from gpt2_local.codex_chat_budget import DailyBudgetLedger, DailyBudgetExceeded, MAX_OUTPUT_TOKENS
 
 
 class BudgetTests(unittest.TestCase):
@@ -32,6 +32,7 @@ class BudgetTests(unittest.TestCase):
 
     def test_concurrent_admission_is_atomic(self):
         ledger = DailyBudgetLedger(self.path, daily_limit_usd=1)
+        capacity = 1_000_000 // ledger.estimate_micros(100)
         def admit(index):
             try:
                 ledger.reserve(str(index), 100)
@@ -40,12 +41,13 @@ class BudgetTests(unittest.TestCase):
                 return False
         with ThreadPoolExecutor(max_workers=10) as pool:
             admitted = sum(pool.map(admit, range(30)))
-        self.assertEqual(admitted, 6)
+        self.assertEqual(admitted, capacity)
         self.assertLessEqual(ledger.snapshot()["charged_usd"], 1)
 
     def test_concurrent_admission_uses_settled_usage_without_losing_audit_history(self):
         ledger = DailyBudgetLedger(self.path, daily_limit_usd=1)
-        completed = [ledger.reserve(str(index), 100) for index in range(6)]
+        capacity = 1_000_000 // ledger.estimate_micros(100)
+        completed = [ledger.reserve(str(index), 100) for index in range(capacity)]
         with self.assertRaises(DailyBudgetExceeded):
             ledger.reserve("blocked", 100)
         for reservation in completed:
@@ -59,16 +61,16 @@ class BudgetTests(unittest.TestCase):
                 return False
         with ThreadPoolExecutor(max_workers=10) as pool:
             admitted = sum(pool.map(admit, range(30)))
-        self.assertEqual(admitted, 6)
+        self.assertEqual(admitted, capacity)
         state = ledger.snapshot()
-        self.assertEqual(state["requests"], 12)
-        self.assertEqual(state["unknown_usage_requests"], 6)
+        self.assertEqual(state["requests"], capacity * 2)
+        self.assertEqual(state["unknown_usage_requests"], capacity)
         self.assertGreater(state["admitted_usd"], 1, "historical reservations must remain in the audit")
         self.assertLessEqual(state["charged_usd"], 1)
         self.assertAlmostEqual(state["charged_usd"], state["reported_estimate_usd"] + state["unsettled_reserved_usd"])
         with closing(sqlite3.connect(self.path)) as connection:
             rows = connection.execute("SELECT id,status,reserved_micros,reported_estimate_micros FROM api_admissions").fetchall()
-        self.assertEqual(len(rows), 12)
+        self.assertEqual(len(rows), capacity * 2)
         by_id = {row[0]: row[1:] for row in rows}
         for reservation in completed:
             self.assertEqual(by_id[reservation["id"]], ("completed", reservation["reserved_micros"], 450))
@@ -85,7 +87,7 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(ledger.snapshot()["unsettled_reserved_usd"], 0)
 
     def test_complete_usage_releases_allowance_and_admits_next_request(self):
-        ledger = DailyBudgetLedger(self.path, daily_limit_usd=.2)
+        ledger = DailyBudgetLedger(self.path, daily_limit_usd=.4)
         reservation = ledger.reserve("chat", 500)
         with self.assertRaises(DailyBudgetExceeded):
             ledger.reserve("next", 500)
@@ -94,7 +96,7 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(state["reported_estimate_usd"], .00045)
         self.assertGreater(state["admitted_usd"], state["reported_estimate_usd"])
         self.assertEqual(state["charged_usd"], .00045)
-        self.assertEqual(state["remaining_usd"], .19955)
+        self.assertEqual(state["remaining_usd"], .39955)
         self.assertEqual(state["unsettled_reserved_usd"], 0)
         self.assertEqual(state["unknown_usage_requests"], 0)
         ledger.reserve("next", 500)
@@ -143,7 +145,8 @@ class BudgetTests(unittest.TestCase):
 
     def test_legacy_schema_reprices_once_preserving_original_estimates_and_all_rows(self):
         stamp = datetime(2026, 10, 5, 12, tzinfo=timezone.utc).timestamp()
-        reserved = DailyBudgetLedger.estimate_micros(600_000)
+        # The fixture represents an old admission made under the 4096 limit.
+        reserved = DailyBudgetLedger.estimate_micros(600_000, 4096)
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute("""CREATE TABLE api_admissions (
                 id TEXT PRIMARY KEY, utc_day TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -318,9 +321,31 @@ class BudgetTests(unittest.TestCase):
         for limit in (0,-1,True,False,float("inf"),float("-inf"),float("nan"),"NaN","Infinity","invalid",None):
             with self.subTest(limit=limit),self.assertRaises(ValueError):
                 DailyBudgetLedger(self.path, daily_limit_usd=limit)
-        for size, output in ((0,4096),(750001,4096),(100,4097),(100,True)):
+        for size, output in ((0,MAX_OUTPUT_TOKENS),(750001,MAX_OUTPUT_TOKENS),
+                             (100,MAX_OUTPUT_TOKENS+1),(100,True)):
             with self.assertRaises(ValueError):
                 DailyBudgetLedger.estimate_micros(size,output)
+
+    def test_larger_output_reservation_preserves_existing_admissions_and_daily_cap(self):
+        self.assertEqual(MAX_OUTPUT_TOKENS, 16384)
+        ledger = DailyBudgetLedger(self.path)
+        original = ledger.reserve("original-output-limit", 100, 4096)
+        expanded = ledger.reserve("expanded-output-limit", 100)
+        self.assertEqual(expanded["reserved_micros"]-original["reserved_micros"], (16384-4096)*15)
+        before = ledger.snapshot()
+        self.assertEqual(before["daily_limit_usd"], 10)
+        self.assertEqual(before["requests"], 2)
+        self.assertEqual(before["charged_usd"],
+                         (original["reserved_micros"]+expanded["reserved_micros"])/1_000_000)
+        with self.assertRaises(ValueError):
+            ledger.reserve("over-limit", 100, MAX_OUTPUT_TOKENS+1)
+        self.assertEqual(ledger.snapshot(), before)
+        self.assertEqual(DailyBudgetLedger(self.path).snapshot(), before)
+        with closing(sqlite3.connect(self.path)) as connection:
+            rows = connection.execute("SELECT id,max_output_tokens,reserved_micros FROM api_admissions ORDER BY rowid").fetchall()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM budget_resets").fetchone()[0], 0)
+        self.assertEqual(rows, [(original["id"], 4096, original["reserved_micros"]),
+                                (expanded["id"], MAX_OUTPUT_TOKENS, expanded["reserved_micros"])])
 
     def test_operator_may_configure_higher_allowance_without_resetting_charges(self):
         ledger=DailyBudgetLedger(self.path)

@@ -128,12 +128,12 @@ function continuationClient(storage = new Map(), request = async () => { throw n
   const nodes = new Map();
   const ui = new Proxy({}, {get: (_, name) => {
     if (!nodes.has(name)) nodes.set(name, {textContent: "", value: "", disabled: false, hidden: false,
-      style: {}, setAttribute() {}, focus() {}});
+      style: {}, classList: {toggle() {}}, setAttribute() {}, focus() {}});
     return nodes.get(name);
   }});
   ui.message.value = "An unsent Human draft";
   ui.target.value = "gpt2";
-  const source = ["readSaved", "save", "endpoint", "refreshControls", "applyState", "acknowledgePending", "acknowledgeContinue", "continueConversation", "boot"]
+  const source = ["readSaved", "save", "endpoint", "refreshControls", "refreshNotice", "applyState", "acknowledgePending", "acknowledgeContinue", "continueConversation", "boot"]
     .map(name => scripts[1].match(name === "endpoint" ? /^    function endpoint[^\n]+/m :
       new RegExp(`    (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0]).join("\n");
   const waiting = {session_id: "chat", revision: 1, context_text: "Header", context_tokens: 4,
@@ -142,7 +142,9 @@ function continuationClient(storage = new Map(), request = async () => { throw n
   const client = vm.createContext({helpers, ui, key, waiting, crypto: {randomUUID: uuid},
     localStorage: {getItem: name => storage.get(name) ?? null,
       setItem: (name, value) => storage.set(name, value), removeItem: name => storage.delete(name)},
-    renderContext() {}, renderHistory() {}, refreshNotice() {}, schedule() {},
+    renderContext() {}, renderHistory() {}, schedule() {},
+    idleIndicator: helpers.createIdleWait({now: () => 0, setInterval: () => 1, clearInterval() {}, announce() {},
+      render: frame => { ui["idle-wait"].hidden = !frame.visible; ui["wait-rest"].hidden = !frame.waitingForHuman; }}),
     presence: async () => {}, poll: async () => {}, createSession: async () => { throw new Error("Unexpected new chat"); },
     request: async (route, body) => { requests.push({route, body: plain(body)}); return request(route, body); }});
   vm.runInContext(source + "\nlet sessionId=readSaved('session'),state=waiting,pending=null,pendingContinue=helpers.savedContinue(readSaved('pending-continue',true),sessionId),mutation=false,stopped=false,sessionEpoch=0,actionError='',connectionError='',failures=0;", client);
@@ -224,6 +226,49 @@ test("Continue cannot overlap a busy turn, pause, Human delivery or mutation, an
   assert.equal(helpers.savedContinue({...value, request_id: "continue:request"}, "chat"), null);
   assert.equal(helpers.savedContinue({...value, request_id: "continue.request"}, "chat"), null);
   assert.equal(helpers.savedContinue({session_id: null, request_id: value.request_id}, null), null);
+});
+
+test("Continue allows explicitly retryable failures and blocks budget, configuration and unclassified errors", () => {
+  const idle = {status: "idle", paused: false, autonomous_turns: 3, next_idle_seconds: null};
+  for (const error_code of ["action_timeout", "process_exited", "connection_closed"]) {
+    const retryable = {...idle, error: "The turn stopped; the conversation is saved.", error_code, error_retryable: true};
+    assert.equal(helpers.canContinue(retryable), true);
+    for (const status of ["queued", "thinking", "generating"]) assert.equal(helpers.canContinue({...retryable, status}), false);
+    assert.equal(helpers.canContinue({...retryable, paused: true}), false);
+    assert.equal(helpers.canContinue({...retryable, autonomous_turns: 2}), false);
+    assert.equal(helpers.canContinue({...retryable, next_idle_seconds: 60}), false);
+  }
+  for (const failure of [
+    {error_code: "daily_budget_exceeded", error_retryable: false},
+    {error_code: "configuration_error", error_retryable: false},
+    {error_code: "action_timeout"}, {},
+    {error_code: "action_timeout", error_retryable: "true"},
+    {error_code: "action_timeout", error_retryable: 1}
+  ]) assert.equal(helpers.canContinue({...idle, error: "The turn could not finish.", ...failure}), false);
+});
+
+test("a timeout keeps its exact notice visible beside manual Continue and retries without a Human message", async () => {
+  const error = "Codex action timed out; the conversation is saved.";
+  const client = continuationClient(undefined, async (_, body) => ({...client.waiting, revision: 2,
+    status: "queued", autonomous_turns: 0, error: null, error_code: null, error_retryable: false,
+    last_continue_request_id: body.request_id}));
+  client.client.failure = {...client.waiting, error, error_code: "action_timeout", error_retryable: true};
+  client.run("applyState(failure)");
+  await client.run("boot()");
+  assert.equal(client.requests.length, 0, "showing or reloading a timeout never retries automatically");
+  assert.equal(client.ui.notice.hidden, false);
+  assert.equal(client.ui["notice-text"].textContent, error);
+  assert.equal(client.ui.status.textContent, "Conversation needs attention");
+  assert.equal(client.ui["wait-rest"].hidden, false);
+  assert.equal(client.ui.continue.disabled, false);
+  assert.equal(client.ui["idle-wait"].hidden, true, "a failure has no autonomous countdown");
+  await client.run("continueConversation()");
+  assert.deepEqual(client.requests, [{route: "sessions/chat/continue", body: {request_id: "continue-request-0001"}}]);
+  assert.equal(client.ui.notice.hidden, true);
+  assert.equal(client.ui["wait-rest"].hidden, true);
+  assert.equal(client.ui.message.value, "An unsent Human draft");
+  assert.equal(client.ui.target.value, "gpt2");
+  assert.deepEqual(plain(client.run("state.messages")), client.waiting.messages);
 });
 
 test("polling is responsive during work and backs off during interruptions", () => {

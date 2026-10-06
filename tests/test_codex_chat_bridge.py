@@ -4,10 +4,12 @@ from pathlib import Path
 import sys
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 
-from gpt2_local.codex_chat_bridge import CodexChatBridge, CodexError, _safe_environment, _stop_process, validate_message
+from gpt2_local.codex_chat_bridge import (DEFAULT_ACTION_TIMEOUT_SECONDS, CodexChatBridge,
+                                         CodexError, _safe_environment, _stop_process, validate_message)
 from gpt2_local.codex_chat_budget import DailyBudgetExceeded
 
 
@@ -88,9 +90,11 @@ class FakeGateway:
     base_url = "http://127.0.0.1:9999/v1"
     def __init__(self):
         self.activations=[]
+        self.lifetimes=[]
         self.revocations=[]
     def activate(self, session_id, timeout_seconds):
         self.activations.append(session_id)
+        self.lifetimes.append(timeout_seconds)
         return "scoped-test-token"
     def revoke(self, token):
         self.revocations.append(token)
@@ -129,6 +133,23 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(resumed["thread_id"],"test-thread")
         self.assertEqual(resumed["usage"]["total_tokens"],0)
 
+    def test_default_action_deadline_and_scoped_gateway_lifetime_are_ten_minutes(self):
+        # Completing a fake action exercises the production default and gateway
+        # activation without waiting ten minutes or calling either model.
+        bridge=CodexChatBridge(self.root/"data",[sys.executable,str(self.script),"normal"],self.gateway)
+        self.assertEqual(DEFAULT_ACTION_TIMEOUT_SECONDS,600)
+        self.assertEqual(bridge.timeout_seconds,600)
+        bridge.run("chat","Hello",lambda *_:{})
+        self.assertEqual(self.gateway.lifetimes,[600])
+        config=tomllib.loads((self.root/"data/players/chat/codex-home/config.toml").read_text())
+        self.assertEqual(config["model_providers"]["gpt2_gateway"]["stream_idle_timeout_ms"],180000)
+
+    def test_timeout_upper_bound_remains_ten_minutes(self):
+        for timeout in (0,-1,601):
+            with self.subTest(timeout=timeout),self.assertRaises(ValueError):
+                CodexChatBridge(self.root/"data",[sys.executable],self.gateway,timeout_seconds=timeout)
+        self.assertEqual(self.bridge(timeout=600).timeout_seconds,600)
+
     def test_policy_mismatch_and_ambient_mcp_fail_closed(self):
         for scenario in ("config-mismatch","ambient-mcp","forbidden"):
             calls=[]
@@ -140,8 +161,9 @@ class BridgeTests(unittest.TestCase):
     def test_cancellation_and_timeout_revoke_token(self):
         with self.assertRaisesRegex(CodexError,"cancelled"):
             self.bridge().run("cancelled","Hello",lambda *_:{},cancelled=lambda:True)
-        with self.assertRaisesRegex(CodexError,"timed out"):
+        with self.assertRaisesRegex(CodexError,"timed out") as captured:
             self.bridge("hang",timeout=.3).run("timed-out","Hello",lambda *_:{})
+        self.assertEqual(captured.exception.code,"codex_timeout")
         self.assertEqual(len(self.gateway.revocations),2)
 
     def test_recovery_thread_conflict_is_rejected_before_launch(self):
