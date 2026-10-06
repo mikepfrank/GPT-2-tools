@@ -44,6 +44,87 @@ environment. Git worktrees do not copy ignored local transcripts or caches.
 
 ## GPT-2 and Codex conversation lab
 
+### Stable continuation checkpoint — October 6, 2026 CDT
+
+The owner considers the beta stable for now and has authorized committing
+and publishing this complete worktree to `origin/codex/gpt2-codex`. Continue
+in `.worktrees/gpt2-codex`; keep other applications and branches separate.
+The deployed runtime release is `30e687c` (import and HTTP attachment export).
+The handoff/publication documentation follows that runtime commit and does
+not require a service restart.
+
+| Resource | Current selection |
+| --- | --- |
+| Host access | `ssh lightsail`; application account `gpt-2` |
+| Server source | `/home/gpt-2/GPT-2-codex` |
+| Python environment | `/home/gpt-2/.venvs/gpt2-public`, with this checkout's `src` on `PYTHONPATH` |
+| Beta service | `gpt2-codex.service`, loopback 8900; scoped API gateway 8902 |
+| Private state | `/home/gpt-2/.local/share/gpt2-codex` (chat/allowance databases and native agent state) |
+| Operator configuration | Root-private `/etc/gpt2-codex.env`; contains the private URL capability and launcher settings |
+| Release and backups | Root-private `/var/lib/gpt2-codex-ops/import-release.json` and `latest-import-backup` |
+| Agent runtime | Pinned Codex CLI 0.154.0, `gpt-6.1-sol`, medium reasoning |
+
+Current behavior includes explicit/automatic recipients, two independent
+history/context panes, optional example round (unchecked by default), safe
+failure causes and reply-only recovery, LF line breaks, GPT-2 preparation/
+streaming indicators, and a draining autonomous countdown. Waits are 60,
+120 and 240 seconds within the three-contribution allowance. Continue can
+shorten a scheduled wait without renewing that allowance; after exhaustion
+it renews the allowance. Browser disconnection suspends autonomous work.
+GPT-2 replies remain 120 tokens; visible Codex messages remain 100 words/
+700 characters, with private work outside those public-message limits.
+Codex's action deadline is ten minutes; launcher lifetime is 610 seconds.
+
+The $10 UTC daily allowance is configurable. It covers this application's
+parent/subagent calls, not chess services. The user explicitly excluded
+development testing and ordered one audited reset; do not reset it again or
+charge new model-development checks to the user's ledger. Model-free tests
+make no API calls. See the detailed document for conservative reservations,
+authoritative usage settlement, cache tiers and unresolved holds.
+
+At the final deployment checkpoint, seven chats and the current 55-message
+conversation, native thread, request IDs, scheduling state and ledger were
+preserved. A private laptop copy remains under ignored `outputs`; the live
+HTTP download was checked against that backup exactly. The owner subsequently
+confirmed that Chrome Export opens the Save As location picker correctly.
+Import restores visible history/context/settings/evidence into a separate
+paused chat with fresh native Codex state; explicitly Resume activity to act.
+Chrome has a separate owner cookie, so use Import to transfer visible history.
+
+The in-app browser can still show unnamed **Stopped** download entries,
+including one newer than the verified successful HTTP export. Read-only
+inspection of the installed desktop download handler found an agent-control
+guard that can cancel unrecognized/unapproved downloads. This is a possible
+cause, not proof of the branch taken by these failures. Do not describe Blob
+URLs as the established sole cause or claim all in-app downloads are fixed.
+The app controls its download popup; the page reports **Export download
+requested** below the composer, which may be below the viewport. Chrome is
+the currently confirmed Save As path.
+
+To resume safely:
+
+1. Confirm this checkout/branch, read `docs/CODEX-CHAT.md` and the latest
+   `VERIFICATION.md` sections, and check the worktree before editing.
+2. Recheck the beta service, deployment record and current chat activity
+   rather than assuming these checkpoint counts or scheduling flags persist.
+   Read the private URL locally from operator configuration when needed;
+   never put its capability, cookies, credentials or private transcripts in Git.
+3. Preserve `gpt2-public`, `astra-chess`, `or-chess` and `astra-caddy` services.
+   Before a beta runtime update, let actions finish, pause affected chats,
+   export the current conversation and take consistent private SQLite/source
+   backups. Preserve native/request IDs and scheduling counts/timestamps.
+4. Reloading a connected active browser can cancel that action via its
+   presence update. Refresh while idle or paused and preserve any unsent
+   draft/recipient. Verify certified HTTPS health after a beta restart; do
+   not rerun paid smoke generation merely to confirm a documentation change.
+
+Latest focused checks: 86 Linux Python tests and 34 Node frontend tests,
+plus model-free real-browser import/picker/download checks and a successful
+55-message live export. Earlier full-suite/native-model evidence and remaining
+cold-start, reboot, load and live-rollback limits are recorded separately.
+
+### Earlier implementation and rollout evidence
+
 The three-participant application is developed separately on
 `codex/gpt2-codex` in `.worktrees/gpt2-codex`, based on streaming tip `c9dbe09`.
 It adds server-owned private transcripts, independent persistent Codex threads,

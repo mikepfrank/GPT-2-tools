@@ -202,10 +202,14 @@ format is `gpt2-codex-chat`, version 1; the earlier two-party public-chat
 archive is a separate format.
 
 **Export chat** starts a direct, owner-scoped HTTP attachment download. This
-also works in the in-app browser, where the previous temporary Blob URL
-download was observed to fail silently. The separate JSON export endpoint
-remains available. The page's notification confirms that a download was
-requested; the browser reports whether it was saved.
+was verified once in the in-app browser, where the previous temporary Blob
+URL download was observed to fail silently. The owner also confirmed Chrome
+opens the Save As location picker. The in-app browser subsequently showed
+additional unnamed Stopped entries; the change is not proof that all browser
+download failures are resolved. The separate JSON export endpoint remains
+available. The page's notification below the composer confirms that a download
+was requested; the browser reports whether it was saved and controls its own
+download popup.
 
 **Import chat** opens a JSON file picker for this application's version-1
 exports. It restores the full public conversation, generation evidence,
@@ -461,8 +465,9 @@ The import/HTTP-export follow-up passed **86 focused Linux Python tests** and
 a synthetic three-message archive, exact multiline context, settings and draft
 into a paused chat without model calls. The refreshed live beta downloaded its
 55-message archive successfully; conversation, metadata and native thread ID
-matched the private backup. Live beta import and a separate Chrome download
-have not been tested. Deployment preserved all seven chats and the API ledger.
+matched the private backup. The owner subsequently confirmed a working Chrome
+Export/Save As flow; live beta import has not been tested. Deployment preserved
+all seven chats and the API ledger.
 Reboot recovery, cold-start/load capacity, and live rollback have not
 been established. The measured snapshots and native bridge corrections are
 recorded in

@@ -2048,3 +2048,34 @@ The owner also reported that the live chat's Codex now recognizes that line
 breaks are allowed. This confirms receipt of the corrected policy in the
 existing thread, rather than a new multiline-output model test. Screenshots,
 exports and operation backups remain private outside Git.
+
+### Download follow-up and stable handoff — October 6, 2026 CDT
+
+The owner's Downloads screenshot showed unnamed **Stopped** entries alongside
+the synthetic 1.3 kB and live 170.9 kB completed archives. One Stopped entry
+was dated 12:05 AM, after the verified live download at 12:02 AM; therefore
+the observed failures cannot all be assigned to the earlier Blob mechanism.
+The completed live file measured 175,014 bytes and was rechecked: all 55
+messages and metadata records matched the private backup exactly. A read-only
+frontend review found one Export binding and one anchor click per invocation,
+without an automatic retry or duplicate-download path. Rapid manual clicks
+can still initiate separate requests.
+
+Bounded read-only inspection of the installed desktop app's bundled static
+download handler (build 26.930.3930.0) found a guard that cancels a download
+when it is not recognized as a user/allowed browser-use download and the page
+is absent or marked as agent-controlled. Native canceled/interrupted history
+is included in the download store. No intentional stopped-placeholder plus
+completed-entry creation was found. The precise UI Stopped label mapping and
+which cancellation branch these particular entries took remain unverified.
+App logs did not provide a relevant cancellation reason. No browser profile
+history, cookies or application files were changed by this inspection.
+
+The owner subsequently reported that **Export works in Chrome and brings up
+the Save As location picker correctly**. This is owner-observed Chrome behavior,
+not an agent-run Chrome comparison. It strengthens the in-app download-handling
+diagnosis without establishing the exact internal failure cause. The owner
+considers the current application stable and requested publication of the
+isolated development branch with an updated continuation handoff. This final
+increment changes documentation only; no model run, allowance reset, browser
+interaction or service restart is required.
