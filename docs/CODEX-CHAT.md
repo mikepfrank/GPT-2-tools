@@ -201,6 +201,26 @@ stream text is never committed or exported as a completed reply. The export
 format is `gpt2-codex-chat`, version 1; the earlier two-party public-chat
 archive is a separate format.
 
+**Export chat** starts a direct, owner-scoped HTTP attachment download. This
+also works in the in-app browser, where the previous temporary Blob URL
+download was observed to fail silently. The separate JSON export endpoint
+remains available. The page's notification confirms that a download was
+requested; the browser reports whether it was saved.
+
+**Import chat** opens a JSON file picker for this application's version-1
+exports. It restores the full public conversation, generation evidence,
+settings and retained GPT-2 context into a separate, paused chat. The original
+chat remains saved. Use **Resume activity** when ready; import itself queues
+no generation and spends no API allowance. The imported chat starts a fresh
+Codex thread with the restored conversation history; it does not resume the
+archive's private native reasoning, workspace or old request IDs.
+
+Files and serialized import requests are limited to 10 MiB and the existing
+10,000-message limit. Invalid files, picker cancellation and failed imports
+leave the selected conversation and unsent draft intact. LF line breaks and
+ordinary blank lines are preserved. The picker rejects unsafe JSON integers
+rather than silently rounding evidence; exported seeds use decimal strings.
+
 Back up private chat, ledger, and Codex state using consistent SQLite backups
 and private filesystem storage. Do not commit these files or use an old
 budget database to reset a quota. Pause affected chats and let active work
@@ -359,6 +379,7 @@ The API is rooted beneath the opaque base path:
 | Method and suffix | Purpose |
 | --- | --- |
 | `POST /api/sessions` | Create a chat and owner cookie |
+| `POST /api/sessions/import` | Validate a version-1 archive and create a separate paused chat |
 | `GET /api/sessions/<id>` | Read committed state and provisional progress |
 | `POST /api/sessions/<id>/message` | Accept a Human message, target, and durable request ID |
 | `POST /api/sessions/<id>/continue` | Request immediate Codex activity with a durable `request_id`, without adding a Human message |
@@ -366,6 +387,7 @@ The API is rooted beneath the opaque base path:
 | `POST /api/sessions/<id>/control` | Pause or resume |
 | `POST /api/sessions/<id>/settings` | Set temperature; the reply cap remains 120 tokens |
 | `GET /api/sessions/<id>/export` | Export private history and generation evidence |
+| `GET /api/sessions/<id>/export/download` | Download the same archive as an HTTP attachment |
 | `GET /health` | Read application health without generation |
 
 ## Verification boundary
@@ -434,6 +456,13 @@ preserved all seven idle chats and all admission rows. The refreshed live
 browser showed the enabled Continue button, 12 retained messages, and no
 error; the live button was not clicked. All five HTTPS health routes and
 existing service PIDs remained healthy. No development model calls were made.
+The import/HTTP-export follow-up passed **86 focused Linux Python tests** and
+**34 Node frontend tests**. A real file-picker/HTTP-handler browser test restored
+a synthetic three-message archive, exact multiline context, settings and draft
+into a paused chat without model calls. The refreshed live beta downloaded its
+55-message archive successfully; conversation, metadata and native thread ID
+matched the private backup. Live beta import and a separate Chrome download
+have not been tested. Deployment preserved all seven chats and the API ledger.
 Reboot recovery, cold-start/load capacity, and live rollback have not
 been established. The measured snapshots and native bridge corrections are
 recorded in

@@ -1990,3 +1990,61 @@ files. All five HTTPS health routes passed and four existing service PIDs stayed
 unchanged. The temporary connection notice cleared automatically. The preserved
 Human message was then resumed through the normal control, with its counter
 already zero. No development generation or allowance reset was performed.
+
+### Chat import and HTTP attachment export — October 6, 2026 CDT
+
+Import accepts this application's `gpt2-codex-chat` version-1 JSON archive.
+Validation detaches JSON values, bounds size/depth/string/message counts,
+checks roles, delimiter-safe content, metadata and generation evidence, and
+retains display-context packing before checking that a future generation cue
+fits. The HTTP import request has a 10 MiB limit; other JSON requests retain
+their 64 KiB limit. Origin and owner-cookie protections remain enforced.
+Persistence completes before the new chat enters live memory. Imported
+history receives a fresh chat and native thread state, starts idle/paused,
+and queues no model action. Historical request IDs remain evidence only.
+
+The frontend opens a native file picker, preserves multiline content and
+settings, rejects nonfinite or unsafe JSON numbers before serialization,
+and changes the selected chat only after a validated successful response.
+Invalid/canceled/failed imports preserve the old conversation and draft.
+The notice accurately directs the user to Resume activity.
+
+The focused Linux orchestration/HTTP, bridge, context and archive suites
+passed **86 tests in 1.696 seconds**. All **34 Node frontend tests passed**,
+including page-script VM checks. A real browser file picker with the actual
+HTTP handler and a synthetic tokenizer/bridge restored a three-message
+archive into a separate paused chat. Its LF/blank-line text, displayed
+context, temperature 1.1, unsent draft and selected GPT-2 recipient were
+preserved. No worker or model ran. The actual preserved 55-message export
+also passed the new validator with a synthetic token counter while retaining
+conversation, metadata and settings exactly; this was not a model test.
+
+In the live in-app browser, the old Export button remained enabled and its
+JSON data was available, but the temporary Blob-URL download produced no
+download event within ten seconds and no JavaScript error. This localizes
+the observed failure to download initiation; an internal browser cause or
+Chrome comparison has not been established. Export now synchronously clicks
+an owner-scoped same-origin HTTP attachment URL. The existing JSON export
+route remains unchanged. An actual browser download succeeded with the
+synthetic fixture, then with the refreshed live beta. The downloaded live
+file contained all **55 messages** and **55 metadata records**; conversation,
+metadata and native thread ID matched the private consistent backup exactly.
+The UI reports download requested without claiming browser save success.
+
+Deployment waited for all chats to be idle, briefly paused the current chat,
+made private SQLite/source backups, installed the three tested runtime files
+and restarted only the beta service. All **seven chats**, **55 current
+messages**, ownership, settings, native thread, request IDs, autonomous count,
+pending flags and last-finished timestamp matched the checkpoint. The pause
+was lifted while the service was stopped without renewing the three-turn
+allowance. All **102 admission rows** and the one reset row stayed unchanged.
+Deployed source hashes matched local files. Beta certified HTTPS health and
+all four existing public/chess health routes returned 200; the four existing
+service PIDs remained unchanged. No development generation or allowance
+reset occurred. The live page showed Import chat, ready status and successful
+Export initiation. No archive was imported into the live beta for testing.
+
+The owner also reported that the live chat's Codex now recognizes that line
+breaks are allowed. This confirms receipt of the corrected policy in the
+existing thread, rather than a new multiline-output model test. Screenshots,
+exports and operation backups remain private outside Git.

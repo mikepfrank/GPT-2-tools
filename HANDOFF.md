@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-05 CDT**
+Last updated: **2026-10-06 CDT**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -139,6 +139,20 @@ follow-up passed 73 focused Linux and 29 Node tests plus model-free real-browser
 phase/Continue checks. Beta-only rollout preserved seven chats and 54 current
 messages, including a newly accepted Human message queued during the update;
 the browser was refreshed while paused, then that message was resumed.
+
+Import chat now reads this application's version-1 JSON exports into a new
+paused conversation, restoring public history, retained GPT-2 context,
+settings and generation evidence. It starts a fresh Codex native thread;
+private reasoning/workspaces and operational request IDs are not adopted.
+The original chat and unsent draft stay intact on invalid/canceled imports.
+Use Resume activity explicitly after a successful import. The limit is 10 MiB
+for both file and serialized request. Export now uses an owner-scoped HTTP
+attachment rather than a temporary Blob URL, which silently failed in one
+in-app browser reproduction. The final checks passed 86 focused Linux Python
+and 34 Node tests, plus actual model-free picker/import/download checks.
+Live Export downloaded all 55 messages and matched the private backup;
+beta-only deployment preserved seven chats, native IDs, scheduling and ledger
+rows. No development model calls or additional allowance reset occurred.
 
 ## Public-service development
 

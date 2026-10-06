@@ -34,7 +34,7 @@
     h1 { font-size: 1.45rem; letter-spacing: -.045em; line-height: 1.2; margin: 0; font-weight: 650; }
     .subtitle { color: var(--muted); font-size: .85rem; margin: 5px 0 0; }
     .beta { display: inline-block; vertical-align: middle; margin-left: 8px; font-size: .65rem; border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
-    .toolbar { display: flex; gap: 8px; align-items: center; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
     .new-chat-controls { display: flex; align-items: center; gap: 10px; }
     .example-option { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .76rem; cursor: pointer; }
     .example-option input { margin: 0; padding: 0; accent-color: var(--accent); }
@@ -151,6 +151,8 @@
       <div class="toolbar" aria-label="Conversation controls">
         <button id="pause" type="button" disabled>Pause activity</button>
         <button id="export" type="button" disabled>Export chat</button>
+        <button id="import" type="button" title="Load an exported chat as a separate conversation. Your current chat stays saved." disabled>Import chat</button>
+        <input id="import-file" type="file" accept=".json,application/json" aria-label="Choose an exported chat JSON file" hidden>
         <details class="tools" id="settings-details">
           <summary>Settings</summary>
           <div class="settings-card">
@@ -222,6 +224,35 @@
         return new URL("api/", url).href;
       }
       function storageKey(href) { return "gpt2-codex:v1:" + apiBase(href); }
+      const importMaxBytes = 10 * 1024 * 1024;
+      async function readImportFile(file) {
+        if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.text !== "function")
+          throw new Error("Choose an exported chat JSON file.");
+        if (!file.size) throw new Error("The selected file is empty. Choose an exported chat JSON file.");
+        if (file.size > importMaxBytes) throw new Error("This chat archive is too large. Imports support files up to 10 MiB.");
+        let text;
+        try { text = await file.text(); }
+        catch (_) { throw new Error("The selected file could not be read. Try choosing it again."); }
+        let archive;
+        try {
+          archive = JSON.parse(text.replace(/^\uFEFF/, ""), (_, value) => {
+            if (typeof value === "number" && (!Number.isFinite(value) ||
+              Number.isInteger(value) && !Number.isSafeInteger(value))) throw new RangeError("Unsupported archive number");
+            return value;
+          });
+        } catch (error) {
+          if (error instanceof RangeError) throw new Error("This chat archive contains a number outside the browser's exact numeric range.");
+          throw new Error("This file is not valid JSON. Choose a file saved with Export chat.");
+        }
+        if (!archive || Array.isArray(archive) || typeof archive !== "object" ||
+          archive.format !== "gpt2-codex-chat" || archive.version !== 1)
+          throw new Error("This file is not a supported GPT-2 × Codex chat export (version 1).");
+        let size;
+        try { size = new Blob([JSON.stringify({archive})]).size; }
+        catch (_) { throw new Error("This chat archive is too complex to import."); }
+        if (size > importMaxBytes) throw new Error("This chat archive is too large. Imports support files up to 10 MiB.");
+        return archive;
+      }
       function contextBlocks(state) {
         const blocks = state.context_blocks;
         if (Array.isArray(blocks) && blocks.every(block => block && typeof block.text === "string" &&
@@ -363,21 +394,21 @@
         if (!String(text).trim() || !Number.isFinite(value) || value < 0 || value > 2) throw new Error("Choose a temperature between 0 and 2.");
         return value;
       }
-      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, generationActivity, createGenerationActivity, budgetText, budgetTooltip, messageTime, validateTemperature};
+      return {roles, apiBase, storageKey, importMaxBytes, readImportFile, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, generationActivity, createGenerationActivity, budgetText, budgetTooltip, messageTime, validateTemperature};
     })();
   </script>
   <script>
     "use strict";
     const helpers = CodexChatHelpers;
     const element = id => document.getElementById(id);
-    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "gpt2-wait", "gpt2-wait-label", "gpt2-announcement", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
+    const ui = Object.fromEntries(["pause", "export", "import", "import-file", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "gpt2-wait", "gpt2-wait-label", "gpt2-announcement", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
     const base = helpers.apiBase(location.href);
     const key = helpers.storageKey(location.href);
     let sessionId = readSaved("session");
     let state = null, pending = readSaved("pending", true), mutation = false, stopped = false;
     let pendingContinue = helpers.savedContinue(readSaved("pending-continue", true), sessionId);
     let timer = null, failures = 0, pollSequence = 0, sessionEpoch = 0, historySignature = "", lastContext = null;
-    let connectionError = "", actionError = "";
+    let connectionError = "", actionError = "", infoNotice = "";
     const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
     const idleIndicator = helpers.createIdleWait({
       now: () => performance.now(), setInterval, clearInterval,
@@ -430,7 +461,9 @@
       const unavailable = !state || mutation;
       ui.send.disabled = unavailable || helpers.isBusy(state) || Boolean(pending);
       ui.pause.disabled = unavailable;
-      ui.export.disabled = !state;
+      ui.export.disabled = unavailable || stopped;
+      ui.import.disabled = unavailable || stopped || helpers.isBusy(state) || Boolean(pending || pendingContinue);
+      ui["import-file"].disabled = ui.import.disabled;
       ui["save-settings"].disabled = unavailable || helpers.isBusy(state);
       ui["new-chat"].disabled = mutation;
       ui["include-example"].disabled = mutation;
@@ -446,9 +479,9 @@
     function refreshNotice() {
       const uncertain = Boolean(pending || pendingContinue);
       const error = actionError || connectionError || state && state.error || "";
-      ui.notice.hidden = !error && !uncertain;
+      ui.notice.hidden = !error && !uncertain && !infoNotice;
       ui.notice.classList.toggle("error", Boolean(error));
-      ui["notice-text"].textContent = error || (pending ? "This message has not been confirmed yet. Reconnecting will check its status; retry sends the same request safely." : pendingContinue ? "Continue delivery has not been confirmed yet. Reconnecting checks its status; retry uses the same request safely." : "");
+      ui["notice-text"].textContent = error || (pending ? "This message has not been confirmed yet. Reconnecting will check its status; retry sends the same request safely." : pendingContinue ? "Continue delivery has not been confirmed yet. Reconnecting checks its status; retry uses the same request safely." : infoNotice);
       ui["retry-message"].hidden = !pending;
       ui["retry-continue"].hidden = !pendingContinue;
       ui.reconnect.hidden = !connectionError;
@@ -552,7 +585,7 @@
     }
     async function createSession() {
       if (mutation) return;
-      mutation = true; clearTimeout(timer); refreshControls(); actionError = "";
+      mutation = true; clearTimeout(timer); refreshControls(); actionError = ""; infoNotice = "";
       const oldId = sessionId;
       try {
         const incoming = await request("sessions", {example_rounds: ui["include-example"].checked ? 1 : 0});
@@ -572,7 +605,7 @@
         pending = {session_id: sessionId, message, target: ui.target.value, request_id: crypto.randomUUID()}; save("pending", pending);
       }
       if (!pending || pending.session_id !== sessionId) return;
-      mutation = true; actionError = ""; refreshControls(); refreshNotice();
+      mutation = true; actionError = ""; infoNotice = ""; refreshControls(); refreshNotice();
       const submission = pending, epoch = sessionEpoch;
       try {
         const incoming = await request(endpoint("/message"), {message: submission.message, target: submission.target, request_id: submission.request_id});
@@ -586,7 +619,7 @@
     }
     async function changeControl(path, body) {
       if (mutation || !state) return;
-      mutation = true; actionError = ""; refreshControls();
+      mutation = true; actionError = ""; infoNotice = ""; refreshControls();
       try { applyState(await request(endpoint(path), body), path === "/settings"); if (path === "/settings") ui["settings-details"].open = false; }
       catch (error) { actionError = error.message; }
       finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
@@ -599,7 +632,7 @@
         save("pending-continue", pendingContinue);
       }
       if (pendingContinue.session_id !== sessionId) return;
-      mutation = true; actionError = ""; refreshControls(); refreshNotice();
+      mutation = true; actionError = ""; infoNotice = ""; refreshControls(); refreshNotice();
       const submission = pendingContinue, epoch = sessionEpoch;
       try {
         const incoming = await request(endpoint("/continue"), {request_id: submission.request_id});
@@ -613,17 +646,39 @@
         }
       } finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
     }
-    async function exportChat() {
-      if (!state) return;
-      ui.export.disabled = true;
+    function exportChat() {
+      if (!state || mutation || stopped) return;
+      const link = document.createElement("a");
       try {
-        const archive = await request(endpoint("/export"));
-        const blob = new Blob([JSON.stringify(archive, null, 2) + "\n"], {type: "application/json"});
-        const url = URL.createObjectURL(blob), link = document.createElement("a");
-        link.href = url; link.download = `gpt2-codex-${sessionId}-${new Date().toISOString().slice(0, 10)}.json`; link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        link.href = new URL(endpoint("/export/download"), base).href;
+        link.download = `gpt2-codex-${sessionId}-${new Date().toISOString().slice(0, 10)}.json`;
+        link.hidden = true; document.body.appendChild(link); link.click();
+        actionError = ""; infoNotice = "Export download requested.";
+      } catch (_) { actionError = "The export download could not be started. Try again."; }
+      finally { link.remove(); refreshNotice(); }
+    }
+    async function importChat() {
+      const file = ui["import-file"].files && ui["import-file"].files[0];
+      if (!file || !state || mutation || stopped || helpers.isBusy(state) || pending || pendingContinue) return;
+      mutation = true; clearTimeout(timer); pollSequence++; actionError = ""; infoNotice = "";
+      refreshControls(); refreshNotice();
+      const oldId = sessionId;
+      try {
+        const archive = await helpers.readImportFile(file);
+        const incoming = await request("sessions/import", {archive});
+        if (!incoming || typeof incoming.session_id !== "string" || !incoming.session_id || incoming.session_id === oldId ||
+          typeof incoming.context_text !== "string" || incoming.status !== "idle" || incoming.paused !== true ||
+          !Array.isArray(incoming.messages) || incoming.messages.some(message => !message ||
+            !Object.hasOwn(helpers.roles, message.role) || typeof message.content !== "string"))
+          throw new Error("The import returned an incomplete conversation. Your current chat is unchanged.");
+        await presence(false);
+        sessionEpoch++; pollSequence++; state = null; historySignature = ""; lastContext = null;
+        pending = null; save("pending", null); pendingContinue = null; save("pending-continue", null);
+        connectionError = ""; failures = 0;
+        infoNotice = "Chat imported. Activity is paused; use Resume activity when you're ready.";
+        applyState(incoming, true); await presence(true); ui.message.focus();
       } catch (error) { actionError = error.message; refreshNotice(); }
-      finally { refreshControls(); }
+      finally { mutation = false; ui["import-file"].value = ""; refreshControls(); refreshNotice(); schedule(); }
     }
     ui.composer.addEventListener("submit", event => { event.preventDefault(); sendMessage(); });
     ui.message.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!ui.send.disabled) sendMessage(); } });
@@ -634,6 +689,11 @@
       catch (error) { actionError = error.message; refreshNotice(); ui.temperature.focus(); }
     });
     ui.export.addEventListener("click", exportChat);
+    ui.import.addEventListener("click", () => {
+      if (ui.import.disabled) return;
+      ui["import-file"].value = ""; ui["import-file"].click();
+    });
+    ui["import-file"].addEventListener("change", importChat);
     ui["retry-message"].addEventListener("click", () => sendMessage(true));
     ui.continue.addEventListener("click", continueConversation);
     ui["retry-continue"].addEventListener("click", continueConversation);
@@ -643,6 +703,8 @@
     window.addEventListener("pagehide", () => {
       stopped = true; clearTimeout(timer); clearInterval(presenceTimer); idleIndicator.dispose(); generationIndicator.dispose();
       ui.continue.hidden = true; ui.continue.disabled = true;
+      ui.import.disabled = true; ui["import-file"].disabled = true;
+      ui.export.disabled = true;
       if (sessionId) {
         const url = new URL(endpoint("/presence"), base);
         const body = JSON.stringify({connected: false});

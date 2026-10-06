@@ -8,7 +8,7 @@ const vm = require("node:vm");
 
 const html = fs.readFileSync(path.join(__dirname, "../src/gpt2_local/web/codex.html"), "utf8");
 const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(match => match[1]);
-const context = vm.createContext({URL});
+const context = vm.createContext({URL, Blob});
 vm.runInContext(scripts[0] + "\nglobalThis.helpers = CodexChatHelpers;", context);
 const helpers = context.helpers;
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -39,7 +39,7 @@ test("new chats are unseeded by default and each creation reads the visible exam
   const creator = vm.createContext({ui, clearTimeout() {}, refreshControls() {}, refreshNotice() {},
     save() {}, schedule() {}, applyState() {}, presence: async () => {},
     request: async (route, body) => { calls.push({route, body: plain(body)}); return {session_id: "new"}; }});
-  vm.runInContext("let mutation=false,timer=null,actionError='',sessionId=null,sessionEpoch=0,pollSequence=0,state=null,historySignature='',lastContext=null,pending=null,pendingContinue=null,connectionError='',failures=0;\n"+createSource, creator);
+  vm.runInContext("let mutation=false,timer=null,actionError='',infoNotice='',sessionId=null,sessionEpoch=0,pollSequence=0,state=null,historySignature='',lastContext=null,pending=null,pendingContinue=null,connectionError='',failures=0;\n"+createSource, creator);
   await vm.runInContext("createSession()", creator);
   ui["include-example"].checked = true;
   await vm.runInContext("createSession()", creator);
@@ -149,7 +149,7 @@ function continuationClient(storage = new Map(), request = async () => { throw n
       render: frame => { ui["gpt2-wait"].hidden = !frame.visible; }}),
     presence: async () => {}, poll: async () => {}, createSession: async () => { throw new Error("Unexpected new chat"); },
     request: async (route, body) => { requests.push({route, body: plain(body)}); return request(route, body); }});
-  vm.runInContext(source + "\nlet sessionId=readSaved('session'),state=waiting,pending=null,pendingContinue=helpers.savedContinue(readSaved('pending-continue',true),sessionId),mutation=false,stopped=false,sessionEpoch=0,actionError='',connectionError='',failures=0;", client);
+  vm.runInContext(source + "\nlet sessionId=readSaved('session'),state=waiting,pending=null,pendingContinue=helpers.savedContinue(readSaved('pending-continue',true),sessionId),mutation=false,stopped=false,sessionEpoch=0,actionError='',infoNotice='',connectionError='',failures=0;", client);
   return {run: code => vm.runInContext(code, client), client, ui, storage, key, requests, waiting};
 }
 
@@ -457,42 +457,49 @@ test("GPT-2 activity hides for stale, paused, failed and disconnected work and s
 });
 
 function realBrowserClient(initial, reducedMotion = false) {
-  const nodes = new Map(), listeners = new Map(), storage = new Map();
-  const timers = new Map(); let serial = 0, incoming = initial, fail = false;
+  const nodes = new Map(), listeners = new Map(), storage = new Map(), requests = [], createdElements = [];
+  const timers = new Map(); let serial = 0, incoming = initial, fail = false, responseError = null;
   function node() {
     const classes = new Set(), events = new Map(), attributes = new Map();
     let text = "";
-    return {hidden: false, disabled: false, value: "", checked: false, style: {}, children: [], textWrites: 0,
+    return {hidden: false, disabled: false, value: "", checked: false, files: [], clicks: 0, style: {}, children: [], textWrites: 0,
       scrollTop: 0, scrollHeight: 1200, clientHeight: 300,
       get textContent() { return text; }, set textContent(value) { text = value; this.textWrites++; },
       classList: {toggle(name, on) { if (on) classes.add(name); else classes.delete(name); }, contains: name => classes.has(name)},
       setAttribute: (name, value) => attributes.set(name, value), getAttribute: name => attributes.get(name),
-      appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); },
+      appendChild(child) { child.parentNode = this; this.children.push(child); }, append(...children) { for (const child of children) this.appendChild(child); },
       replaceChildren(...children) { this.children = children; }, addEventListener: (name, callback) => events.set(name, callback),
-      focus() {}, events};
+      remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; this.removed = true; },
+      focus() {}, click() { this.clicks++; this.clickedWhileAttached = Boolean(this.parentNode); }, events};
   }
   for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const element = node(); element.hidden = /\bhidden\b/.test(match[0]); nodes.set(match[1], element);
   }
   const href = "https://codex-test.gpt2-chat.com/closed-beta/";
+  const body = node();
   storage.set(helpers.storageKey(href) + ":session", initial.session_id);
   const timer = callback => { const id = ++serial; timers.set(id, callback); return id; };
   const client = vm.createContext({URL, Blob, console, location: {href}, performance: {now: () => 0},
     crypto: {randomUUID: () => "request-for-browser-test"},
-    document: {getElementById: id => nodes.get(id), createElement: node, createDocumentFragment: node},
+    document: {body, getElementById: id => nodes.get(id),
+      createElement: tagName => { const element = node(); element.tagName = tagName; createdElements.push(element); return element; },
+      createDocumentFragment: node},
     window: {matchMedia: () => ({matches: reducedMotion}), addEventListener: (name, callback) => listeners.set(name, callback)},
     navigator: {sendBeacon: () => true}, setInterval: timer, setTimeout: timer,
     clearInterval: id => timers.delete(id), clearTimeout: id => timers.delete(id),
     localStorage: {getItem: name => storage.get(name) ?? null, setItem: (name, value) => storage.set(name, value), removeItem: name => storage.delete(name)},
     fetch: async (url, options = {}) => {
+      requests.push({route: new URL(url).pathname, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : undefined});
       if (new URL(url).pathname.endsWith("/presence")) return {ok: true, json: async () => ({})};
       if (fail) throw new Error("Offline");
+      if (responseError) return {ok: false, status: responseError.status, json: async () => ({error: responseError.message})};
       return {ok: true, json: async () => incoming};
     }});
   vm.runInContext(scripts[0], client);
   vm.runInContext(scripts[1].replace(/    boot\(\);\s*$/, "    globalThis.bootReady = boot();"), client);
-  return {ui: Object.fromEntries(nodes), listeners, ready: client.bootReady,
-    run: code => vm.runInContext(code, client), receive: value => { incoming = value; }, disconnect: () => { fail = true; }};
+  return {ui: Object.fromEntries(nodes), listeners, storage, requests, createdElements, body, ready: client.bootReady,
+    run: code => vm.runInContext(code, client), receive: value => { incoming = value; }, disconnect: () => { fail = true; },
+    reject: (status, message) => { responseError = {status, message}; }};
 }
 
 test("real browser scripts wire preparation, streamed text, timer Continue and waiting phases without touching draft or scroll", async () => {
@@ -558,6 +565,174 @@ test("real browser generation animation stops on error, pause, new chat, disconn
   client.listeners.get("pagehide")();
   assert.equal(ui["gpt2-wait"].hidden, true);
   assert.equal(ui["gpt2-announcement"].textContent, "");
+  assert.equal(ui.import.disabled, true);
+  assert.equal(ui["import-file"].disabled, true);
+});
+
+const exportedArchive = {format: "gpt2-codex-chat", version: 1, session_id: "0123456789abcdef0123456789abcdef",
+  conversation: {header: "An imported header.", context_start: 0,
+    messages: [{role: "Human", content: " Hello\nwith a line break", generation: null},
+      {role: "GPT-2", content: " A reply", generation: {output_token_ids: [1, 2], output_tokens: 2}}]},
+  metadata: [{id: 1, created_at: 1791234567, example: false}, {id: 2, created_at: 1791234568, example: false}],
+  settings: {temperature: .7, max_new_tokens: 120}, codex_thread_id: "old-native-id"};
+const jsonFile = (document, prefix = "") => {
+  const text = prefix + JSON.stringify(document);
+  return {size: new Blob([text]).size, text: async () => text};
+};
+
+test("imported JSON is bounded, parsed as data and checked for the supported archive format", async () => {
+  assert.deepEqual(plain(await helpers.readImportFile(jsonFile(exportedArchive))), exportedArchive);
+  assert.deepEqual(plain(await helpers.readImportFile(jsonFile(exportedArchive, "\uFEFF"))), exportedArchive);
+  let read = false;
+  await assert.rejects(helpers.readImportFile({size: helpers.importMaxBytes + 1, text: async () => { read = true; return "{}"; }}), /up to 10 MiB/);
+  assert.equal(read, false, "oversized files are rejected before they are read into memory");
+  for (const file of [null, {size: -1}, {size: 100}, {size: Infinity, text() {}}])
+    await assert.rejects(helpers.readImportFile(file), /Choose an exported chat JSON file/);
+  await assert.rejects(helpers.readImportFile({size: 0, text: async () => ""}), /file is empty/);
+  await assert.rejects(helpers.readImportFile({size: 1, text: async () => "{"}), /not valid JSON/);
+  await assert.rejects(helpers.readImportFile({size: 10, text: async () => { throw new Error("file-system details"); }}), /could not be read/);
+  for (const document of [null, [], 1, {}, {...exportedArchive, format: "another-app"}, {...exportedArchive, version: 2}])
+    await assert.rejects(helpers.readImportFile(jsonFile(document)), /not a supported/);
+  const hugeArchive = {...exportedArchive, metadata: {text: "x".repeat(helpers.importMaxBytes)}};
+  await assert.rejects(helpers.readImportFile({size: 10, text: async () => JSON.stringify(hugeArchive)}), /up to 10 MiB/,
+    "the serialized request is bounded as well as the source file");
+  const evidence = {...exportedArchive, conversation: {...exportedArchive.conversation,
+    messages: exportedArchive.conversation.messages.map(message => message.role === "GPT-2" ?
+      {...message, generation: {...message.generation, provenance: {overflow: 0}}} : message)}};
+  const overflow = JSON.stringify(evidence).replace('"overflow":0', '"overflow":1e999');
+  await assert.rejects(helpers.readImportFile({size: new Blob([overflow]).size, text: async () => overflow}), /outside the browser's exact numeric range/,
+    "overflowing numbers cannot silently become null when the archive is serialized for upload");
+  const unsafeInteger = JSON.stringify(evidence).replace('"overflow":0', '"overflow":9007199254740993');
+  await assert.rejects(helpers.readImportFile({size: new Blob([unsafeInteger]).size, text: async () => unsafeInteger}), /outside the browser's exact numeric range/,
+    "64-bit provenance integers cannot silently round when the archive is parsed in the browser");
+  const preciseSeeds = {...exportedArchive, conversation: {...exportedArchive.conversation,
+    messages: exportedArchive.conversation.messages.map(message => message.role === "GPT-2" ?
+      {...message, generation: {...message.generation, seed: "9223372036854775807", requested_seed: "9223372036854775807",
+        provenance: {largest_safe_integer: Number.MAX_SAFE_INTEGER}}} : message)}};
+  assert.deepEqual(plain(await helpers.readImportFile(jsonFile(preciseSeeds))), preciseSeeds,
+    "decimal seed strings and safe integer evidence retain exact values");
+});
+
+test("the actual Export click requests a same-origin HTTP attachment while retaining its user gesture and the selected chat", async () => {
+  const original = {...scheduledWait, revision: 1, context_text: "Current context", messages: [{role: "Human", content: " A message"}]};
+  const client = realBrowserClient(original); await client.ready;
+  const ui = client.ui;
+  ui.message.value = "Keep this draft"; ui.target.value = "gpt2"; ui.context.scrollTop = 12; ui.history.scrollTop = 34;
+  const priorRequests = client.requests.length;
+  client.run("globalThis.Blob=function(){throw new Error('Export must not create a Blob URL')}");
+  ui.export.events.get("click")();
+  const anchors = client.createdElements.filter(element => element.tagName === "a");
+  assert.equal(anchors.length, 1);
+  const anchor = anchors[0];
+  assert.equal(anchor.href, "https://codex-test.gpt2-chat.com/closed-beta/api/sessions/chat/export/download");
+  assert.match(anchor.download, /^gpt2-codex-chat-\d{4}-\d{2}-\d{2}\.json$/);
+  assert.equal(anchor.hidden, true);
+  assert.equal(anchor.clicks, 1); assert.equal(anchor.clickedWhileAttached, true);
+  assert.equal(anchor.removed, true); assert.equal(client.body.children.length, 0);
+  assert.equal(client.requests.length, priorRequests, "Export uses the browser attachment route directly, without an async fetch or duplicate request");
+  assert.equal(client.run("sessionId"), "chat");
+  assert.deepEqual(plain(client.run("state.messages")), original.messages);
+  assert.equal(ui.message.value, "Keep this draft"); assert.equal(ui.target.value, "gpt2");
+  assert.equal(ui.context.scrollTop, 12); assert.equal(ui.history.scrollTop, 34);
+  assert.equal(ui["notice-text"].textContent, "Export download requested.");
+  assert.equal(ui.notice.classList.contains("error"), false);
+  for (const condition of ["mutation=true", "stopped=true", "state=null"]) {
+    client.run("mutation=false;stopped=false;" + condition + ";refreshControls()");
+    assert.equal(ui.export.disabled, true);
+    ui.export.events.get("click")();
+    assert.equal(client.createdElements.filter(element => element.tagName === "a").length, 1);
+  }
+});
+
+test("the actual import button opens the JSON picker, loads a separate paused chat and preserves draft and target", async () => {
+  const original = {...scheduledWait, status: "idle", autonomous_turns: 3, next_idle_seconds: null,
+    session_id: "original", revision: 1, context_text: "Original context", messages: [{id: "old-1", role: "Human", content: "Original message"}]};
+  const imported = {...original, session_id: "imported", revision: 1, paused: true, active: null,
+    context_text: "An imported header.\n\nHuman> Hello\nwith a line break\n\nGPT-2> A reply",
+    messages: exportedArchive.conversation.messages.map((message, index) => ({...message, id: "import-" + index})),
+    settings: exportedArchive.settings};
+  const client = realBrowserClient(original); await client.ready;
+  const ui = client.ui;
+  ui.message.value = "Keep this draft"; ui.target.value = "gpt2";
+  assert.equal(ui.import.disabled, false);
+  assert.match(html, /<button id="export"[^>]*>[\s\S]*?<button id="import"/);
+  assert.match(html, /<input id="import-file"[^>]*type="file"[^>]*accept="\.json,application\/json"[^>]*hidden/);
+  ui["import-file"].value = "previous-file.json";
+  ui.import.events.get("click")();
+  assert.equal(ui["import-file"].value, "", "the same filename can be selected again");
+  assert.equal(ui["import-file"].clicks, 1);
+  let finishRead;
+  ui["import-file"].files = [{size: jsonFile(exportedArchive).size, text: () => new Promise(resolve => { finishRead = resolve; })}];
+  ui["import-file"].value = "archive.json";
+  const loading = ui["import-file"].events.get("change")();
+  assert.equal(ui.import.disabled, true);
+  assert.equal(client.run("sessionId"), "original", "the current chat stays selected during validation and upload");
+  client.receive(imported); finishRead(JSON.stringify(exportedArchive)); await loading;
+  const uploads = client.requests.filter(request => request.route.endsWith("/sessions/import"));
+  assert.deepEqual(uploads.map(({method, body}) => ({method, body})), [{method: "POST", body: {archive: exportedArchive}}]);
+  assert.equal(client.run("sessionId"), "imported");
+  assert.equal(client.run("state.paused"), true);
+  assert.equal(client.run("state.status"), "idle");
+  assert.deepEqual(plain(client.run("state.messages")), imported.messages);
+  assert.equal(client.run("state.context_text"), imported.context_text);
+  assert.equal(ui.message.value, "Keep this draft"); assert.equal(ui.target.value, "gpt2");
+  assert.equal(ui.temperature.value, "0.7");
+  assert.equal(ui.pause.textContent, "Resume activity");
+  assert.equal(ui.notice.hidden, false); assert.equal(ui.notice.classList.contains("error"), false);
+  assert.match(ui["notice-text"].textContent, /Chat imported\. Activity is paused/);
+  assert.equal(ui["import-file"].value, "");
+  assert.equal(client.requests.some(request => /\/(message|continue|control)$/.test(request.route)), false,
+    "import never sends a message, resumes activity or starts a model turn");
+  assert.deepEqual(client.requests.filter(request => request.route.endsWith("/presence")).map(request => request.body),
+    [{connected: true}, {connected: false}, {connected: true}]);
+});
+
+test("cancelled, invalid, rejected and interrupted imports preserve the existing conversation, draft and scroll without automatic retry", async () => {
+  const original = {...scheduledWait, session_id: "original", revision: 1, status: "idle", autonomous_turns: 3,
+    next_idle_seconds: null, context_text: "Original context", messages: [{role: "Human", content: "Original message"}]};
+  for (const failure of ["cancel", "invalid-json", "oversized", "server-rejection", "network", "incomplete-response", "malformed-messages"]) {
+    const client = realBrowserClient(original); await client.ready;
+    const ui = client.ui;
+    ui.message.value = "Keep my draft"; ui.target.value = "codex";
+    ui.context.scrollTop = 27; ui.history.scrollTop = 56;
+    if (failure === "server-rejection") client.reject(400, "This archive has invalid message metadata");
+    if (failure === "network") client.disconnect();
+    if (failure === "incomplete-response") client.receive({session_id: "new", status: "idle", paused: true});
+    if (failure === "malformed-messages") client.receive({...original, session_id: "new", paused: true, messages: [null]});
+    ui["import-file"].files = failure === "cancel" ? [] : [failure === "invalid-json" ? {size: 1, text: async () => "{"} :
+      failure === "oversized" ? {size: helpers.importMaxBytes + 1, text: async () => { throw new Error("must not read"); }} : jsonFile(exportedArchive)];
+    await ui["import-file"].events.get("change")();
+    assert.equal(client.run("sessionId"), "original", failure);
+    assert.deepEqual(plain(client.run("state.messages")), original.messages, failure);
+    assert.equal(client.run("state.context_text"), original.context_text, failure);
+    assert.equal(ui.message.value, "Keep my draft", failure); assert.equal(ui.target.value, "codex", failure);
+    assert.equal(ui.context.scrollTop, 27, failure); assert.equal(ui.history.scrollTop, 56, failure);
+    if (failure !== "cancel") assert.equal(ui.notice.classList.contains("error"), true, failure);
+    if (failure === "server-rejection") assert.equal(ui["notice-text"].textContent, "This archive has invalid message metadata");
+    const uploads = client.requests.filter(request => request.route.endsWith("/sessions/import"));
+    assert.equal(uploads.length, ["cancel", "invalid-json", "oversized"].includes(failure) ? 0 : 1);
+    assert.equal(client.requests.filter(request => request.route.endsWith("/presence")).length, 1,
+      "only initial presence is sent; an unsuccessful import never disconnects the selected chat");
+    await client.run("poll()");
+    assert.equal(client.requests.filter(request => request.route.endsWith("/sessions/import")).length, uploads.length,
+      "reconnection checks the selected session and never posts an import again");
+  }
+});
+
+test("imports cannot overlap active work, uncertain deliveries, a mutation or a stopped page", async () => {
+  const original = {...scheduledWait, revision: 1, context_text: "Original context", messages: []};
+  const client = realBrowserClient(original); await client.ready;
+  const ui = client.ui;
+  ui["import-file"].files = [jsonFile(exportedArchive)];
+  for (const condition of ["state.status='queued'", "state.status='thinking'", "state.status='generating'",
+    "pending={request_id:'human-1'}", "pendingContinue={request_id:'continue-1'}", "mutation=true", "stopped=true"]) {
+    client.run("state.status='idle';pending=null;pendingContinue=null;mutation=false;stopped=false;" + condition + ";refreshControls()");
+    assert.equal(ui.import.disabled, true, condition);
+    ui.import.events.get("click")();
+    await ui["import-file"].events.get("change")();
+    assert.equal(ui["import-file"].clicks, 0, condition);
+    assert.equal(client.requests.filter(request => request.route.endsWith("/sessions/import")).length, 0, condition);
+  }
 });
 
 test("daily allowance uses settled estimates plus unresolved reservations instead of gross historical admissions", () => {

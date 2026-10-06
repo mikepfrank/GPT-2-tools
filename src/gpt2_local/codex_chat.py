@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -24,6 +24,7 @@ from .codex_chat_context import (Conversation, append_message, generate_reply,
                                  new_conversation, packed_context)
 from .codex_chat_budget import DailyBudgetExceeded
 from .codex_chat_bridge import validate_message
+from .codex_chat_archive import ArchiveTooLarge, MAX_ARCHIVE_BYTES, validate_archive
 from .public_chat import _PublicRunner
 from .runtime import GenerationSettings, Gpt2Runner
 
@@ -181,6 +182,42 @@ class CodexChatApplication:
 
     def _conversation(self, session):
         return Conversation.from_record(session["conversation"])
+
+    def import_archive(self, owner: str, document: object):
+        """Save a paused copy of visible history without touching its source chat."""
+        try:
+            conversation, metadata, settings = validate_archive(
+                document, self.runner.count_prompt_tokens, max_messages=MAX_MESSAGES)
+        except ArchiveTooLarge as exc:
+            raise ChatError(413, str(exc)) from exc
+        with self.condition:
+            if len(self.sessions) >= MAX_SESSIONS:
+                raise ChatError(429, "The beta chat limit has been reached")
+            identifier = secrets.token_hex(16)
+            while identifier in self.sessions:
+                identifier = secrets.token_hex(16)
+            now = self.clock()
+            # This fresh marker permits explicit resumption of restored history;
+            # historical Human request IDs remain inert metadata in the archive.
+            imported_request = "import_" + secrets.token_hex(16) if conversation.messages else None
+            session = dict(id=identifier, owner=owner, conversation=conversation.record(), metadata=metadata,
+                           status="idle", paused=True, autonomous_turns=3, last_finished=now,
+                           settings=settings, epoch=0, revision=0,
+                           request_ids=[imported_request] if imported_request else [],
+                           last_request_id=imported_request, thread_id=None, last_prompt_index=0,
+                           last_processed_epoch=0, pending_human=False, pending_continuation=False,
+                           pending_continue=False, continue_request_ids=[], last_continue_request_id=None,
+                           target="auto", error=None, error_code=None,
+                           recovery_mode=None, pending_followup_round=False)
+            # Construct the response and persist successfully before publishing
+            # any in-memory session or presence. Malformed files and failed
+            # writes leave existing chats and the work queue unchanged.
+            state = self._state(session)
+            self._save(session)
+            self.sessions[identifier] = session
+            self.live[identifier] = now
+            state.update(revision=session["revision"], connected=True)
+            return state
 
     def _scheduled_idle_delay(self, session):
         if (self._connected(session["id"]) and not session["paused"] and not session["error"]
@@ -651,11 +688,13 @@ def make_handler(app, base_path: str, origin: str):
             # URL capability, session IDs and drafts must not enter access logs.
             pass
 
-        def _send(self, status, data, *, html=False, cookie=None):
+        def _send(self, status, data, *, html=False, cookie=None, download_name=None):
             body = data.encode("utf-8") if html else json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8" if html else "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            if download_name:
+                self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
             self.send_header("Cache-Control", "no-store")
             if status >= 400:
                 self.close_connection = True
@@ -691,14 +730,14 @@ def make_handler(app, base_path: str, origin: str):
                 raise ChatError(404, "Not found")
             return path[len(prefix):]
 
-        def _body(self):
+        def _body(self, maximum=MAX_BODY):
             if self.headers.get("Transfer-Encoding"):
                 raise ChatError(400, "Transfer encoding is unsupported")
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 raise ChatError(400, "Invalid request length")
-            if not 0 < length <= MAX_BODY:
+            if not 0 < length <= maximum:
                 raise ChatError(413, "Request is too large or empty")
             raw = self.rfile.read(length)
             if len(raw) != length:
@@ -710,7 +749,7 @@ def make_handler(app, base_path: str, origin: str):
                 raise ChatError(403, "Requests must originate from this chat")
             try:
                 body = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-            except (ValueError, UnicodeError):
+            except (ValueError, UnicodeError, RecursionError):
                 raise ChatError(400, "Invalid JSON")
             if not isinstance(body, dict):
                 raise ChatError(400, "Request must be an object")
@@ -731,12 +770,15 @@ def make_handler(app, base_path: str, origin: str):
                 if path == "health":
                     self._send(200, {"ok": True, "application": "gpt2-codex"})
                     return
-                match = re.fullmatch(r"api/sessions/([a-f0-9]{32})(/export)?", path)
+                match = re.fullmatch(r"api/sessions/([a-f0-9]{32})(/export(?:/download)?)?", path)
                 if not match:
                     raise ChatError(404, "Not found")
                 owner, _ = self._owner()
                 identifier, export = match.groups()
-                self._send(200, app.export(identifier, owner) if export else app.state(identifier, owner))
+                download_name = (f"gpt2-codex-{identifier}-{datetime.now(timezone.utc).date().isoformat()}.json"
+                                 if export == "/export/download" else None)
+                self._send(200, app.export(identifier, owner) if export else app.state(identifier, owner),
+                           download_name=download_name)
             except ChatError as exc:
                 self._send(exc.status, {"error": str(exc)})
             except (ValueError, KeyError):
@@ -745,7 +787,13 @@ def make_handler(app, base_path: str, origin: str):
         def do_POST(self):
             try:
                 path = self._path()
-                body = self._body()
+                body = self._body(MAX_ARCHIVE_BYTES if path == "api/sessions/import" else MAX_BODY)
+                if path == "api/sessions/import":
+                    if set(body) != {"archive"}:
+                        raise ChatError(400, "Import requires only a chat archive")
+                    owner, cookie = self._owner(create=True)
+                    self._send(201, app.import_archive(owner, body["archive"]), cookie=cookie)
+                    return
                 if path == "api/sessions":
                     owner, cookie = self._owner(create=True)
                     self._send(201, app.create(owner, body.get("example_rounds", 1)), cookie=cookie)
