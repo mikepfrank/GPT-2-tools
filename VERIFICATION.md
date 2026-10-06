@@ -1797,3 +1797,53 @@ The side-panel browser showed **Ready · waiting for you**, an enabled composer,
 no error, distinct speaker colors, an unchecked example-round checkbox and
 **$0.02 / $10.00**. The five deployed runtime/UI files matched local SHA-256
 hashes. The private screenshot is outside the repository.
+
+### Context-footer autonomous countdown follow-up — October 5, 2026 CDT
+
+The owner requested an animated, positive countdown in the right-hand GPT-2
+context footer while waiting for an autonomous timeout. The follow-up uses an
+animated draining bar and remaining-time text, with a distinct waiting-for-Human
+mode when no autonomous action is scheduled. Server scheduling duration and
+stable due-time fields support the display; the timer itself performs no model
+queries or development API calls.
+
+The real-HTML model-free HTTP/browser preview displayed **Next turn 1:00**,
+then **0:59**, with a measured CSS scale change in the draining bar. Pause
+hid the timer. Regression checks cover a stable wait identity under a fake
+clock, zero remaining time, error/busy/disconnected states, and reduced motion.
+The timer made no model calls. Earlier verification and allowance snapshots
+above remain historical evidence.
+
+### Manual Continue follow-up — October 5, 2026 CDT
+
+The owner requested a **Continue** button beside **Waiting for you**. The
+manual action invites Codex to act immediately and renews the allowance for
+up to three autonomous visible contributions without adding a Human message.
+Its owner-scoped `POST /api/sessions/<id>/continue` accepts a durable
+`request_id`; persisted pending/acknowledged IDs prevent duplicate activity
+on retries and reloads. Conversation history and the native Codex thread
+remain intact, and Human-message handling keeps priority. The countdown
+never submits this action automatically.
+
+The focused Linux backend/HTTP suite passed **31 tests in 0.203 seconds**, and
+all **22 focused Node frontend tests passed**. The real-HTML HTTP/browser mock
+accepted a Continue click while retaining its three messages, unsent draft,
+and Codex recipient selection, then began a new countdown. Lost-acknowledgment
+and reload checks exercised durable deduplication. No model was invoked.
+
+Before the beta-only rollout, all **seven sessions were idle** and no agent
+containers remained. Private SQLite/source backups were made, then the two
+runtime/UI source files were updated. After startup, every conversation and
+its message metadata, Codex thread, owner/settings, Human request IDs,
+autonomous count, last-finished timestamp, and paused state matched the
+backup byte for byte. API admission rows were unchanged: this development
+verification made no model calls or charges. The user's current conversation
+retained all **12 messages**.
+
+All **five HTTPS health routes returned 200**, and the four existing service
+PIDs remained unchanged. At the owner's request, the real beta browser was
+refreshed after idle; its draft/recipient remained intact. The live DOM showed
+ready/waiting status, the enabled **Continue** footer button, 12 messages, and
+no error. The screenshot remains outside the repository. The live Continue
+button was not clicked; only the model-free mock verified the action, so
+actual model behavior initiated by this control remains untested.

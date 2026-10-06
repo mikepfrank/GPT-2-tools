@@ -80,7 +80,15 @@
     .empty-history { color: var(--muted); font-size: .85rem; line-height: 1.6; margin: 12px 0; }
     .history-footer { min-height: 38px; display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 8px 19px; border-top: 1px solid var(--line); color: var(--muted); font-size: .74rem; }
     .history-footer button { font-size: .74rem; padding: 3px 7px; }
-    .context-footer { min-height: 38px; padding: 11px 20px; border-top: 1px solid var(--line); font-size: .74rem; color: var(--muted); }
+    .context-footer { min-height: 38px; padding: 9px 20px; border-top: 1px solid var(--line); font-size: .74rem; color: var(--muted); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px 16px; }
+    .idle-wait { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--codex); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .wait-rest { margin-left: auto; white-space: nowrap; display: flex; align-items: center; gap: 9px; }
+    .wait-rest button { padding: 3px 8px; font-size: .74rem; color: var(--codex); }
+    .wait-clock { width: 11px; height: 11px; border: 1px solid currentColor; border-radius: 50%; position: relative; flex: none; }
+    .wait-clock::after { content: ""; position: absolute; width: 3px; height: 3px; left: 4px; top: 2px; border-left: 1px solid currentColor; border-bottom: 1px solid currentColor; }
+    .wait-track { width: 62px; height: 4px; overflow: hidden; border-radius: 3px; background: var(--line); }
+    .wait-fill { display: block; width: 100%; height: 100%; border-radius: inherit; background: currentColor; transform-origin: left center; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
     .composer { margin-top: 17px; padding: 17px 20px; }
     .composer-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
     .composer-top label { font-size: .86rem; font-weight: 650; }
@@ -124,7 +132,7 @@
       .keyboard-hint { max-width: 180px; line-height: 1.5; }
       .composer-actions button { padding: 9px 11px; }
     }
-    @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } .wait-track { display: none; } .wait-fill { transition: none !important; } }
   </style>
 </head>
 <body>
@@ -165,7 +173,12 @@
           <div class="legend"><span class="role-human">Human</span><span class="role-gpt2">GPT-2</span><span class="role-codex">Codex</span><span>120 tokens reserved for a reply</span></div>
         </div>
         <pre id="context" tabindex="0" aria-label="Exact current GPT-2 context">Connecting to your conversation…</pre>
-        <div class="context-footer">GPT-2 XL · original 2019 model · 1,024-token window</div>
+        <div class="context-footer">
+          <span>GPT-2 XL · original 2019 model · 1,024-token window</span>
+          <span id="idle-wait" class="idle-wait" hidden aria-hidden="true"><span class="wait-clock"></span><span id="wait-label">Next turn</span><span class="wait-track"><span id="wait-fill" class="wait-fill"></span></span></span>
+          <span id="wait-rest" class="wait-rest" hidden><span>Waiting for you</span><button id="continue" type="button" title="Let Codex and GPT-2 continue for up to three more autonomous turns." disabled>Continue</button></span>
+          <span id="wait-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
+        </div>
       </section>
       <section class="panel" aria-labelledby="history-title">
         <div class="panel-header">
@@ -185,7 +198,7 @@
       <textarea id="message" placeholder="Address Codex or GPT-2, or let Codex work out who you mean…" autocomplete="off" required></textarea>
       <div class="composer-bottom"><p class="keyboard-hint">Enter to send · Shift+Enter for a new line</p><div class="composer-actions"><button id="send" class="primary" type="submit" disabled>Send message ↑</button></div></div>
     </form>
-    <div id="notice" class="notice" hidden role="status" aria-live="polite"><span id="notice-text"></span><div id="notice-actions" class="notice-actions" hidden><button id="retry-message" type="button" hidden>Retry same message</button><button id="reconnect" type="button" hidden>Reconnect</button></div></div>
+    <div id="notice" class="notice" hidden role="status" aria-live="polite"><span id="notice-text"></span><div id="notice-actions" class="notice-actions" hidden><button id="retry-message" type="button" hidden>Retry same message</button><button id="retry-continue" type="button" hidden>Retry continue</button><button id="reconnect" type="button" hidden>Reconnect</button></div></div>
     <p class="footnote">Codex can work in the background and invite GPT-2 to respond. After a quiet minute, the conversation can continue for up to three autonomous turns, with longer waits between turns. Activity pauses when you leave the page. GPT-2’s replies can be unpredictable.</p>
   </main>
   <script id="chat-helpers">
@@ -216,6 +229,18 @@
         return Boolean(pending && pending.session_id === state.session_id && (state.last_request_id === pending.request_id ||
           Array.isArray(state.messages) && state.messages.some(message => message.role === "Human" && message.request_id === pending.request_id)));
       }
+      function savedContinue(value, sessionId) {
+        return typeof sessionId === "string" && value && value.session_id === sessionId && typeof value.request_id === "string" &&
+          /^[A-Za-z0-9_-]{8,80}$/.test(value.request_id) ? {session_id: value.session_id, request_id: value.request_id} : null;
+      }
+      function continueAccepted(pending, state) {
+        return Boolean(pending && state && pending.session_id === state.session_id &&
+          pending.request_id === state.last_continue_request_id);
+      }
+      function canContinue(state) {
+        return Boolean(state && state.status === "idle" && !state.paused && !state.error &&
+          state.next_idle_seconds === null && state.autonomous_turns >= 3);
+      }
       function describeStatus(state) {
         if (!state) return "Connecting…";
         if (state.status === "queued") return "Waiting for a turn…";
@@ -223,9 +248,52 @@
         if (state.status === "generating") return "GPT-2 is responding…";
         if (state.error) return "Conversation needs attention";
         if (state.paused) return "Autonomous activity paused";
-        if (Number.isFinite(state.next_idle_seconds)) return `Ready · next autonomous turn in ${Math.max(0, Math.ceil(state.next_idle_seconds))}s`;
+        if (Number.isFinite(state.next_idle_seconds)) return "Ready · autonomous turn scheduled";
         if (state.autonomous_turns >= 3) return "Ready · waiting for you";
         return "Ready for your message";
+      }
+      function idleWait(previous, state, now, connected = true) {
+        if (!connected || !state || state.status !== "idle" || state.paused || state.error ||
+          !Number.isFinite(state.next_idle_seconds) || !Number.isFinite(state.idle_wait_seconds) ||
+          state.idle_wait_seconds <= 0 || state.idle_wait_seconds > 300 ||
+          !Number.isFinite(state.idle_wait_until) || state.idle_wait_until <= 0) return null;
+        const key = `${state.session_id}:${state.idle_wait_until}`;
+        if (previous && previous.key === key) return previous;
+        const durationMs = state.idle_wait_seconds * 1000;
+        return {key, durationMs, endsAt: now + Math.max(0, Math.min(durationMs, state.next_idle_seconds * 1000))};
+      }
+      function waitFrame(wait, now, reducedMotion = false, fresh = false) {
+        if (!wait) return {visible: false, phase: "off", smooth: false};
+        const remainingMs = Math.max(0, wait.endsAt - now);
+        const seconds = Math.ceil(remainingMs / 1000);
+        return {visible: true, phase: seconds ? "waiting" : "due",
+          label: seconds ? `Next turn in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : "Turn due…",
+          fraction: Math.max(0, Math.min(1, remainingMs / wait.durationMs)),
+          smooth: !reducedMotion && !fresh && seconds > 0};
+      }
+      function createIdleWait({now, setInterval, clearInterval, render, announce, reducedMotion = () => false}) {
+        let wait = null, timer = null, phase = "off", fresh = false, waitingForHuman = false;
+        function stopTimer() { if (timer !== null) { clearInterval(timer); timer = null; } }
+        function draw() {
+          const frame = {...waitFrame(wait, now(), reducedMotion(), fresh), waitingForHuman};
+          render(frame); fresh = false;
+          if (frame.phase !== phase) {
+            phase = frame.phase;
+            announce(phase === "waiting" ? "Autonomous turn scheduled." : phase === "due" ? "Autonomous turn due." : "");
+          }
+          if (frame.phase !== "waiting") stopTimer();
+          else if (timer === null) timer = setInterval(draw, 250);
+        }
+        return {
+          update(state, connected = true) {
+            const previous = wait;
+            wait = idleWait(wait, state, now(), connected);
+            waitingForHuman = connected && canContinue(state);
+            if (wait !== previous) fresh = true;
+            draw();
+          },
+          dispose() { wait = null; waitingForHuman = false; stopTimer(); draw(); }
+        };
       }
       function budgetText(budget) {
         const charged = budget && (Number.isFinite(budget.charged_usd) ? budget.charged_usd : budget.admitted_usd);
@@ -254,20 +322,35 @@
         if (!String(text).trim() || !Number.isFinite(value) || value < 0 || value > 2) throw new Error("Choose a temperature between 0 and 2.");
         return value;
       }
-      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, describeStatus, budgetText, budgetTooltip, messageTime, validateTemperature};
+      return {roles, apiBase, storageKey, contextBlocks, isBusy, pollDelay, acceptsState, pendingAccepted, savedContinue, continueAccepted, canContinue, describeStatus, idleWait, waitFrame, createIdleWait, budgetText, budgetTooltip, messageTime, validateTemperature};
     })();
   </script>
   <script>
     "use strict";
     const helpers = CodexChatHelpers;
     const element = id => document.getElementById(id);
-    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "reconnect"].map(id => [id, element(id)]));
+    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "idle-wait", "wait-label", "wait-fill", "wait-rest", "continue", "wait-announcement", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "retry-continue", "reconnect"].map(id => [id, element(id)]));
     const base = helpers.apiBase(location.href);
     const key = helpers.storageKey(location.href);
     let sessionId = readSaved("session");
     let state = null, pending = readSaved("pending", true), mutation = false, stopped = false;
+    let pendingContinue = helpers.savedContinue(readSaved("pending-continue", true), sessionId);
     let timer = null, failures = 0, pollSequence = 0, sessionEpoch = 0, historySignature = "", lastContext = null;
     let connectionError = "", actionError = "";
+    const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const idleIndicator = helpers.createIdleWait({
+      now: () => performance.now(), setInterval, clearInterval,
+      reducedMotion: () => motionPreference.matches,
+      announce: text => { ui["wait-announcement"].textContent = text; },
+      render: frame => {
+        ui["idle-wait"].hidden = !frame.visible;
+        ui["wait-rest"].hidden = !frame.waitingForHuman;
+        if (!frame.visible) return;
+        if (ui["wait-label"].textContent !== frame.label) ui["wait-label"].textContent = frame.label;
+        ui["wait-fill"].style.transition = frame.smooth ? "transform .25s linear" : "none";
+        ui["wait-fill"].style.transform = `scaleX(${frame.fraction})`;
+      }
+    });
 
     function readSaved(name, json = false) {
       try { const value = localStorage.getItem(key + ":" + name); return json && value ? JSON.parse(value) : value; } catch (_) { return null; }
@@ -304,19 +387,25 @@
       ui.pause.textContent = state && state.paused ? "Resume activity" : "Pause activity";
       ui.pause.setAttribute("aria-pressed", String(Boolean(state && state.paused)));
       ui["retry-message"].disabled = mutation || !state || helpers.isBusy(state);
+      ui.continue.disabled = unavailable || stopped || Boolean(pending) || !helpers.canContinue(state);
+      ui.continue.textContent = pendingContinue ? "Retry continue" : "Continue";
+      ui["retry-continue"].disabled = unavailable || stopped || helpers.isBusy(state) || Boolean(pending) || state && state.paused;
     }
     function refreshNotice() {
-      const uncertain = Boolean(pending);
+      const uncertain = Boolean(pending || pendingContinue);
       const error = actionError || connectionError || state && state.error || "";
       ui.notice.hidden = !error && !uncertain;
       ui.notice.classList.toggle("error", Boolean(error));
-      ui["notice-text"].textContent = error || (uncertain ? "This message has not been confirmed yet. Reconnecting will check its status; retry sends the same request safely." : "");
-      ui["retry-message"].hidden = !uncertain;
+      ui["notice-text"].textContent = error || (pending ? "This message has not been confirmed yet. Reconnecting will check its status; retry sends the same request safely." : pendingContinue ? "Continue delivery has not been confirmed yet. Reconnecting checks its status; retry uses the same request safely." : "");
+      ui["retry-message"].hidden = !pending;
+      ui["retry-continue"].hidden = !pendingContinue;
       ui.reconnect.hidden = !connectionError;
       ui["notice-actions"].hidden = !uncertain && !connectionError;
-      ui.status.textContent = connectionError ? "Connection interrupted · reconnecting" : helpers.describeStatus(state);
+      const statusText = connectionError ? "Connection interrupted · reconnecting" : helpers.describeStatus(state);
+      if (ui.status.textContent !== statusText) ui.status.textContent = statusText;
       ui["status-dot"].classList.toggle("error", Boolean(connectionError || state && state.error));
       ui["status-dot"].classList.toggle("busy", !connectionError && helpers.isBusy(state));
+      idleIndicator.update(state, !stopped && !connectionError);
     }
     function renderContext(incoming) {
       const blocks = helpers.contextBlocks(incoming);
@@ -366,6 +455,7 @@
       if (!helpers.acceptsState(state, incoming)) return;
       state = incoming; sessionId = incoming.session_id; save("session", sessionId);
       if (helpers.pendingAccepted(pending, incoming)) acknowledgePending();
+      if (helpers.continueAccepted(pendingContinue, incoming)) acknowledgeContinue();
       renderContext(incoming); renderHistory(incoming);
       const tokens = Number.isFinite(incoming.context_tokens) ? incoming.context_tokens : 0;
       ui["token-count"].textContent = `${tokens.toLocaleString()} / 1,024 tokens`;
@@ -381,6 +471,9 @@
     function acknowledgePending() {
       if (pending && ui.message.value === pending.message) ui.message.value = "";
       pending = null; save("pending", null); actionError = "";
+    }
+    function acknowledgeContinue() {
+      pendingContinue = null; save("pending-continue", null); actionError = "";
     }
     function schedule() {
       clearTimeout(timer);
@@ -411,7 +504,8 @@
         const incoming = await request("sessions", {example_rounds: ui["include-example"].checked ? 1 : 0});
         if (oldId) await presence(false);
         sessionEpoch++; pollSequence++; state = null; historySignature = ""; lastContext = null;
-        pending = null; save("pending", null); ui.message.value = ""; connectionError = ""; failures = 0;
+        pending = null; save("pending", null); pendingContinue = null; save("pending-continue", null);
+        ui.message.value = ""; connectionError = ""; failures = 0;
         applyState(incoming, true); await presence(true); ui.message.focus();
       } catch (error) { actionError = error.message; refreshNotice(); }
       finally { mutation = false; refreshControls(); schedule(); }
@@ -443,6 +537,28 @@
       catch (error) { actionError = error.message; }
       finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
     }
+    async function continueConversation() {
+      if (mutation || stopped || !state || helpers.isBusy(state) || pending || state.paused) return;
+      if (!pendingContinue) {
+        if (!helpers.canContinue(state)) return;
+        pendingContinue = {session_id: sessionId, request_id: crypto.randomUUID()};
+        save("pending-continue", pendingContinue);
+      }
+      if (pendingContinue.session_id !== sessionId) return;
+      mutation = true; actionError = ""; refreshControls(); refreshNotice();
+      const submission = pendingContinue, epoch = sessionEpoch;
+      try {
+        const incoming = await request(endpoint("/continue"), {request_id: submission.request_id});
+        if (epoch !== sessionEpoch || submission.session_id !== sessionId) return;
+        applyState(incoming); acknowledgeContinue(); connectionError = ""; failures = 0;
+      } catch (error) {
+        if (epoch !== sessionEpoch || submission.session_id !== sessionId) return;
+        if (pendingContinue && pendingContinue.request_id === submission.request_id && !helpers.continueAccepted(submission, state)) {
+          if (error.accepted === false || error.status >= 400 && error.status < 500 && error.accepted !== true) acknowledgeContinue();
+          actionError = error.message + (pendingContinue ? " Continue delivery is unconfirmed. Reconnecting checks its status; retry uses the same request ID." : "");
+        }
+      } finally { mutation = false; refreshControls(); refreshNotice(); schedule(); }
+    }
     async function exportChat() {
       if (!state) return;
       ui.export.disabled = true;
@@ -465,11 +581,13 @@
     });
     ui.export.addEventListener("click", exportChat);
     ui["retry-message"].addEventListener("click", () => sendMessage(true));
+    ui.continue.addEventListener("click", continueConversation);
+    ui["retry-continue"].addEventListener("click", continueConversation);
     ui.reconnect.addEventListener("click", () => { clearTimeout(timer); failures = 0; sessionId ? poll() : createSession(); });
     ui.latest.addEventListener("click", jumpLatest);
     ui.history.addEventListener("scroll", () => { ui.latest.hidden = atBottom(ui.history); });
     window.addEventListener("pagehide", () => {
-      stopped = true; clearTimeout(timer); clearInterval(presenceTimer);
+      stopped = true; clearTimeout(timer); clearInterval(presenceTimer); idleIndicator.dispose();
       if (sessionId) {
         const url = new URL(endpoint("/presence"), base);
         const body = JSON.stringify({connected: false});

@@ -44,6 +44,23 @@ message or a manual resume. An idle action with no visible contribution also
 uses one allowance. `wait_for_human` ends this allowance immediately.
 Examples alone cannot start autonomous work.
 
+The right-hand GPT-2 context footer shows an animated, positive countdown
+while an autonomous turn is scheduled. A
+draining bar and remaining-time text show progress toward the next turn.
+Waiting for the Human uses a separate status rather than an expired countdown.
+The display uses the server's scheduling state and does not issue model/API
+queries. The countdown is deployed and browser-verified as of October 5, 2026
+CDT; it supports reduced-motion preferences.
+
+The **Continue** button beside **Waiting for you** asks Codex to act
+immediately and renews the allowance for up to three autonomous visible
+contributions. It adds no Human message and preserves the conversation and
+Codex thread. Each manual request has a durable ID, so retrying or reloading
+does not start the same action twice; the clock never submits Continue
+automatically. The control is deployed and verified in the real browser;
+click behavior was tested with a model-free mock. A live model action from
+this button has not been tested.
+
 Pause and loss of browser presence suspend autonomous work. The browser sends
 a presence pulse every 15 seconds; its lease lasts 45 seconds. A new Human
 message interrupts the active action. Epoch checks prevent canceled Codex
@@ -317,6 +334,7 @@ The API is rooted beneath the opaque base path:
 | `POST /api/sessions` | Create a chat and owner cookie |
 | `GET /api/sessions/<id>` | Read committed state and provisional progress |
 | `POST /api/sessions/<id>/message` | Accept a Human message, target, and durable request ID |
+| `POST /api/sessions/<id>/continue` | Request immediate Codex activity with a durable `request_id`, without adding a Human message |
 | `POST /api/sessions/<id>/presence` | Refresh or end browser presence |
 | `POST /api/sessions/<id>/control` | Pause or resume |
 | `POST /api/sessions/<id>/settings` | Set temperature; the reply cap remains 120 tokens |
@@ -380,6 +398,15 @@ unchanged. The terminal-usage transport-race correction is deployed; audited
 reconciliation settled the continuation's two requests at $0.016187 total,
 leaving $9.983813 with no unresolved holds. Chat state remained preserved
 without repeating the continuation.
+
+The October 5 CDT countdown/Continue follow-up passed **31 focused Linux
+backend/HTTP tests** and **22 focused Node frontend tests**. A real-HTML
+model-free browser preview confirmed a draining countdown and manual Continue
+without adding a Human message or losing the draft/recipient. Beta deployment
+preserved all seven idle chats and all admission rows. The refreshed live
+browser showed the enabled Continue button, 12 retained messages, and no
+error; the live button was not clicked. All five HTTPS health routes and
+existing service PIDs remained healthy. No development model calls were made.
 Reboot recovery, cold-start/load capacity, and live rollback have not
 been established. The measured snapshots and native bridge corrections are
 recorded in

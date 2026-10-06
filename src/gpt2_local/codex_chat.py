@@ -119,6 +119,9 @@ class CodexChatApplication:
             session["epoch"] += 1
             session.setdefault("pending_human", False)
             session.setdefault("pending_continuation", False)
+            session.setdefault("pending_continue", False)
+            session.setdefault("continue_request_ids", [])
+            session.setdefault("last_continue_request_id", None)
             self._save(session)
         self.worker = None
         if start_worker:
@@ -153,6 +156,7 @@ class CodexChatApplication:
                            settings=dict(max_new_tokens=120, temperature=0.8), epoch=0, revision=0,
                            request_ids=[], last_request_id=None, thread_id=None, last_prompt_index=0,
                            last_processed_epoch=0, pending_human=False, pending_continuation=False,
+                           pending_continue=False, continue_request_ids=[], last_continue_request_id=None,
                            target="auto", error=None)
             self.sessions[identifier] = session
             self.live[identifier] = now
@@ -174,20 +178,26 @@ class CodexChatApplication:
             blocks.append({"role": "GPT-2", "text": active["content"]})
         messages = [dict(role=message.role, content=message.content, **metadata)
                     for message, metadata in zip(conversation.messages, session["metadata"])]
-        idle_wait = None
-        if (self._connected(session["id"]) and not session["paused"]
+        idle_wait = idle_wait_seconds = idle_wait_until = None
+        if (self._connected(session["id"]) and not session["paused"] and not session["error"]
                 and session["autonomous_turns"] < 3 and session["last_request_id"]
+                and not session["pending_human"] and not session.get("pending_continuation")
+                and not session["pending_continue"]
                 and session["status"] == "idle"):
             delay = min(self.idle_delay * 2 ** session["autonomous_turns"], 300)
-            idle_wait = max(0, round(session["last_finished"] + delay - self.clock()))
+            idle_wait_seconds = delay
+            idle_wait_until = session["last_finished"] + delay
+            idle_wait = max(0, round(idle_wait_until - self.clock()))
         public_active = None if not active else {"role": active["role"], "content": active["content"]}
         budget = self.ledger.snapshot()
         return dict(session_id=session["id"], revision=session["revision"], context_text=text,
                     context_tokens=tokens, context_blocks=blocks, messages=messages[-1000:],
                     history_truncated=len(messages) > 1000, status=session["status"], paused=session["paused"],
                     autonomous_turns=session["autonomous_turns"], next_idle_seconds=idle_wait,
+                    idle_wait_seconds=idle_wait_seconds, idle_wait_until=idle_wait_until,
                     active=public_active, error=session["error"], settings=session["settings"], budget=budget,
-                    connected=self._connected(session["id"]), last_request_id=session["last_request_id"])
+                    connected=self._connected(session["id"]), last_request_id=session["last_request_id"],
+                    last_continue_request_id=session["last_continue_request_id"])
 
     def state(self, identifier, owner):
         with self.condition:
@@ -224,10 +234,39 @@ class CodexChatApplication:
             session.update(last_request_id=request_id, epoch=session["epoch"] + 1,
                            autonomous_turns=0, pending_human=True, target=target, error=None)
             session["pending_continuation"] = False
+            session["pending_continue"] = False
             self.live[identifier] = self.clock()
             self.active.pop(identifier, None)
             if not session["paused"]:
                 self._queue(session)
+            self._save(session)
+            return self._state(session)
+
+    def continue_activity(self, identifier, owner, request_id):
+        """Resume the participants without inserting a Human chat message."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ChatError(400, "A valid request identifier is required")
+        with self.condition:
+            session = self._owned(identifier, owner)
+            if request_id in session["continue_request_ids"]:
+                return self._state(session)
+            if not session["last_request_id"]:
+                raise ChatError(409, "Send a Human message before continuing this chat")
+            if (session["pending_human"] or session["pending_continue"]
+                    or session["status"] not in {"idle", "error"}
+                    or identifier in self.pending or self.running == identifier):
+                raise ChatError(409, "Wait for the accepted turn to finish before continuing")
+            if len(session["continue_request_ids"]) >= MAX_MESSAGES:
+                raise ChatError(413, "This chat's Continue request limit has been reached; start a new chat")
+            session["continue_request_ids"].append(request_id)
+            session.update(last_continue_request_id=request_id, paused=False, error=None,
+                           autonomous_turns=0, epoch=session["epoch"] + 1,
+                           pending_human=False, pending_continuation=False, pending_continue=True)
+            self.active.pop(identifier, None)
+            if self._connected(identifier):
+                self._queue(session)
+            else:
+                session["status"] = "idle"
             self._save(session)
             return self._state(session)
 
@@ -239,7 +278,8 @@ class CodexChatApplication:
             if connected:
                 was_connected = self._connected(identifier)
                 self.live[identifier] = self.clock()
-                if (not was_connected and (session["pending_human"] or session.get("pending_continuation")) and not session["paused"]
+                if (not was_connected and (session["pending_human"] or session.get("pending_continuation")
+                                           or session["pending_continue"]) and not session["paused"]
                         and session["status"] == "idle"):
                     self._queue(session)
                     self._save(session)
@@ -263,9 +303,11 @@ class CodexChatApplication:
             if paused:
                 session["status"] = "idle"
             if not paused:
+                session["error"] = None
                 session["autonomous_turns"] = 0
                 session["last_finished"] = self.clock()
-                if (session["pending_human"] or session.get("pending_continuation")) and session["last_request_id"]:
+                if (session["pending_human"] or session.get("pending_continuation")
+                        or session["pending_continue"]) and session["last_request_id"]:
                     self._queue(session)
             self._save(session)
             self.condition.notify_all()
@@ -297,10 +339,10 @@ class CodexChatApplication:
     def _due(self):
         now = self.clock()
         for session in self.sessions.values():
-            if (session["status"] == "idle" and session["last_request_id"] and not session["paused"]
+            if (session["status"] == "idle" and session["last_request_id"] and not session["paused"] and not session["error"]
                     and session["autonomous_turns"] < 3 and self._connected(session["id"])):
                 delay = min(self.idle_delay * 2 ** session["autonomous_turns"], 300)
-                if session.get("pending_continuation") or now >= session["last_finished"] + delay:
+                if session.get("pending_continuation") or session["pending_continue"] or now >= session["last_finished"] + delay:
                     return session["id"]
         return None
 
@@ -348,6 +390,7 @@ class CodexChatApplication:
                         else:
                             session["pending_continuation"] = False
                             message = str(exc) if isinstance(exc, ChatError) else "This turn could not finish. Your chat was preserved; send a message to retry."
+                        session["pending_continue"] = False
                         session.update(error=message, autonomous_turns=3)
             finally:
                 with self.condition:
@@ -356,7 +399,8 @@ class CodexChatApplication:
                     if session["epoch"] == epoch:
                         session.update(status="idle", last_finished=self.clock())
                         if completed:
-                            session.update(last_processed_epoch=epoch, pending_human=False, pending_continuation=False)
+                            session.update(last_processed_epoch=epoch, pending_human=False,
+                                           pending_continuation=False, pending_continue=False)
                     elif identifier not in self.pending:
                         session["status"] = "idle"
                     self.running = None
@@ -368,6 +412,7 @@ class CodexChatApplication:
         waited = False
         with self.condition:
             continuation = bool(self.sessions[identifier].get("pending_continuation"))
+            requested_continue = self.sessions[identifier]["pending_continue"]
 
         def cancelled():
             with self.condition:
@@ -404,6 +449,10 @@ class CodexChatApplication:
                     # A visible recovery reply is durable even if its transport
                     # subsequently disconnects; never replay that contribution.
                     session["pending_continuation"] = False
+                if requested_continue:
+                    # The requested action has visibly taken place; reconnecting
+                    # must not replay it if the private turn later disconnects.
+                    session["pending_continue"] = False
                 if not human_action:
                     session["autonomous_turns"] += 1
                 self.active.pop(identifier, None)
@@ -473,6 +522,7 @@ class CodexChatApplication:
                 with self.condition:
                     check()
                     self.sessions[identifier]["autonomous_turns"] = 3
+                    self.sessions[identifier]["pending_continue"] = False
                     self._save(self.sessions[identifier])
                 return {"ok": True}
             if name in {"search_web", "read_web_page"}:
@@ -492,7 +542,8 @@ class CodexChatApplication:
             event = ("Resume the interrupted action after the already saved GPT-2 reply. "
                      "The allowance has been reset. Decide whether to emit a brief response to GPT-2 "
                      "or wait_for_human; do not repeat any earlier Human or GPT-2 turn."
-                     if continuation else ("Human message" if human_action else "Conversation lull"))
+                     if continuation else ("Human requested continuing the conversation without adding a message"
+                                           if requested_continue else ("Human message" if human_action else "Conversation lull")))
             prompt = (AGENT_POLICY + "\nEvent: " + event
                       + "\nHuman recipient preference: " + session["target"]
                       + "\nNew messages since previous action:\n" + json.dumps(new_messages, ensure_ascii=False)
@@ -504,6 +555,7 @@ class CodexChatApplication:
             session = self.sessions[identifier]
             session["thread_id"] = result["thread_id"]
             session["last_prompt_index"] = len(self._conversation(session).messages)
+            session["pending_continue"] = False
             if not human_action and visible == 0 and not waited:
                 session["autonomous_turns"] += 1
             self._save(session)
@@ -628,13 +680,17 @@ def make_handler(app, base_path: str, origin: str):
                     owner, cookie = self._owner(create=True)
                     self._send(201, app.create(owner, body.get("example_rounds", 1)), cookie=cookie)
                     return
-                match = re.fullmatch(r"api/sessions/([a-f0-9]{32})/(message|presence|control|settings)", path)
+                match = re.fullmatch(r"api/sessions/([a-f0-9]{32})/(message|presence|control|settings|continue)", path)
                 if not match:
                     raise ChatError(404, "Not found")
                 owner, _ = self._owner()
                 identifier, action = match.groups()
                 if action == "message":
                     result = app.message(identifier, owner, body.get("message"), body.get("target", "auto"), body.get("request_id"))
+                elif action == "continue":
+                    if set(body) != {"request_id"}:
+                        raise ChatError(400, "Continue requires only a request identifier")
+                    result = app.continue_activity(identifier, owner, body["request_id"])
                 elif action == "presence":
                     result = app.presence(identifier, owner, body.get("connected"))
                 elif action == "control":

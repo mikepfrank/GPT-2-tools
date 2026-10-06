@@ -1,6 +1,6 @@
 # Project handoff
 
-Last updated: **2026-10-06 UTC**
+Last updated: **2026-10-05 CDT**
 
 This is the living continuation brief for developers and agentic coding
 sessions working on `GPT-2-tools`. Update it when project direction, verified
@@ -90,6 +90,21 @@ audited reconciliation settled two continuation requests at $0.016187 total,
 with no unresolved holds and $9.983813 remaining. No extra model calls or
 repeated continuation occurred. Historical rollout estimates stay in
 `VERIFICATION.md`.
+
+The context-footer countdown adds an animated drain bar and remaining
+time when an autonomous turn is scheduled, with a distinct waiting-for-Human
+mode. It uses server scheduling state without extra model/API calls.
+
+The **Continue** button beside **Waiting for you** immediately
+invites Codex to act and renews the three-contribution autonomous allowance,
+without inserting a Human message or changing its saved thread/history.
+The owner-scoped `POST /api/sessions/<id>/continue` uses a durable request ID
+for retry/reload deduplication. The October 5 CDT follow-up passed 31 focused
+Linux backend/HTTP and 22 Node frontend tests, with model-free browser checks.
+Beta-only deployment preserved all seven chats/admission rows and 12 current
+messages; the live browser shows Continue enabled with no error. Health/PIDs
+remain unchanged. Continue was clicked only in the mock; live model action
+from that control has not been tested. No development model charges were made.
 
 ## Public-service development
 
