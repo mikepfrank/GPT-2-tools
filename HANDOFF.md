@@ -120,6 +120,16 @@ already saved GPT-2 output. The owner's requested recovery response followed
 by one further GPT-2 round uses the normal two-minute pause and a bounded
 one-query follow-up; a new Human message supersedes that sequence.
 
+Codex public messages now allow LF line breaks and ordinary blank lines within
+the unchanged 100-word/700-character budget. Only double-newline speaker-tag
+delimiters are reserved. Both validators share the canonical message checks;
+fresh per-action policy and resumed-thread base instructions explicitly
+supersede older no-newline guidance. CLI 0.154.0 cannot replace dynamic tools
+through `thread/resume`, so native conversation history is preserved. The
+beta-only correction passed 69 model-free Linux tests and preserved all seven
+chats, 44 current messages, native thread, allowance rows and scheduling state.
+No browser refresh or development model call was required.
+
 ## Public-service development
 
 Public-service work lives in `codex/gpt2-public`, branched from chat tip

@@ -32,7 +32,9 @@ The composer offers **Auto**, **Codex**, and **GPT-2** recipients. Auto lets
 Codex assess the Human's intent. An explicit Codex recipient requires Codex
 to contribute first; an explicit GPT-2 recipient requires a GPT-2 query first.
 Codex may then respond, query GPT-2 again, or wait. Each visible Codex
-contribution is one paragraph of at most 100 words and 700 characters.
+contribution is brief, at most 100 words and 700 characters. LF line breaks
+and ordinary blank lines are allowed. Only a double newline immediately
+followed by a speaker tag and `>` is reserved for message boundaries.
 An action permits at most three visible contributions and two GPT-2 queries.
 Codex reasoning, tool output, and raw final answers stay outside the chat;
 `emit_message` is the only route for a visible Codex message.
@@ -208,7 +210,7 @@ allowance. The ledger's implemented reservation rates are $5 per million
 input units and $15 per million output tokens. Requests are limited to
 750,000 bytes and at most 16,384 output tokens per model response, including
 private reasoning. This ceiling is independent of each public Codex message's
-one-paragraph limit and GPT-2's 120-token generation limit.
+100-word/700-character limit and GPT-2's 120-token generation limit.
 
 When authoritative completed usage supplies valid input/output counts, the
 ledger settles that request at the applicable tier and releases unused

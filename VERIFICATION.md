@@ -1905,3 +1905,43 @@ preserved; the screenshot is private outside the repository. The ten-minute
 wall-clock limit was verified with model-free tests rather than a deliberately
 long live action, and the special one-round recovery mode was not needed live
 because the newer conversation had already progressed.
+
+### Codex line breaks and delimiter clarification — October 5, 2026 CDT
+
+The owner corrected Codex's statement that its messages could not contain
+line breaks. Both the bridge and host validators had rejected every newline,
+and tool/base instructions repeated that restriction. They now share the
+conversation's canonical validation: LF and ordinary blank lines are allowed;
+double-newline speaker-tag delimiters, CR and the reserved end-of-text token
+remain rejected. The 100-word/700-character public-message budget is unchanged.
+Existing context packing and browser `pre-wrap` already preserve line breaks.
+
+The pinned CLI 0.154.0 generated experimental JSON schema was inspected in a
+network-disabled container. `ThreadResumeParams` accepts `baseInstructions`
+but has no `dynamicTools` field. New threads receive the corrected tool
+description; fresh base instructions and per-action policy explicitly
+supersede the old no-newline description in resumed native threads. No native
+history or thread identity was edited. A captured fake app-server exchange
+verifies that the updated instructions reach both start and resume.
+
+The focused Linux bridge, orchestration/HTTP and context suites passed
+**69 tests in 1.497 seconds**. They verify exact multiline preservation through
+tool transport, rolling GPT-2 context, private export and restart, and reject
+forged Human/GPT-2/Codex/unknown-speaker boundaries without mutating history.
+`git diff --check` passed. No real model was invoked for this verification;
+following the revised instructions remains a live model behavior to observe.
+
+Deployment waited for the owner's current action to finish, briefly paused
+idle activity, made private SQLite/source backups, updated only two beta
+backend files, and restarted only that service. All **seven chats**, **44
+current messages**, metadata, native thread, owner/settings, request IDs,
+autonomous allowance and last-finished timestamp matched the checkpoint.
+The temporary pause was lifted without renewing the allowance. All **84 API
+admission rows** and the one reset row remained unchanged. Both deployed
+source hashes matched the tested files. All five certified HTTPS health
+routes passed; the four existing service PIDs remained unchanged.
+
+Without reloading, the live browser returned to **Ready · waiting for you**
+with 44 messages, an enabled composer and no error. The new backend policy
+takes effect on Codex's next action. Browser draft/recipient remained intact;
+the final screenshot is private outside the repository.

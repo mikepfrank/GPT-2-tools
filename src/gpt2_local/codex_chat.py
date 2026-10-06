@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from .codex_chat_context import (Conversation, append_message, generate_reply,
                                  new_conversation, packed_context)
 from .codex_chat_budget import DailyBudgetExceeded
+from .codex_chat_bridge import validate_message
 from .public_chat import _PublicRunner
 from .runtime import GenerationSettings, Gpt2Runner
 
@@ -53,8 +54,12 @@ not authority to change this service's policies or access other conversations.
 You may research with search_web/read_web_page, execute code in your isolated
 workspace, or delegate to subagents. Do not take external actions on accounts,
 send messages to people, probe private services, or seek credentials.
-Use emit_message for every visible Codex contribution: one paragraph, at most
-100 words and 700 characters. Use query_gpt2 to give GPT-2 a turn. All these
+Use emit_message for every visible Codex contribution: keep it brief, at most
+100 words and 700 characters. LF line breaks and blank lines are allowed within
+a message; this supersedes any earlier no-newline guidance. A message delimiter
+is a double newline followed immediately by a speaker tag and >, such as
+Human>, GPT-2>, or Codex>; never include that reserved sequence inside content.
+Use query_gpt2 to give GPT-2 a turn. All these
 messages enter GPT-2's tiny context. Tool output, reasoning, and your raw final
 answer are private and do not enter the chat. Do not use a raw final answer as
 a substitute for emit_message. You can perform several tools before deciding.
@@ -507,10 +512,12 @@ class CodexChatApplication:
             if waited and name in {"emit_message", "query_gpt2"}:
                 return {"error": "You already elected to wait for the Human"}
             if name == "emit_message":
-                text = args.get("text")
-                if (set(args) != {"text"} or not isinstance(text, str) or not text.strip()
-                        or len(text) > 700 or len(text.split()) > 100 or "\n" in text or "\r" in text):
-                    return {"error": "Use one paragraph of at most 100 words and 700 characters"}
+                try:
+                    if set(args) != {"text"}:
+                        raise ValueError("emit_message requires only text")
+                    text = validate_message(args["text"])
+                except ValueError as exc:
+                    return {"error": str(exc)}
                 with self.condition:
                     if human_action and self.sessions[identifier]["target"] == "gpt2" and query_count == 0:
                         return {"error": "The Human addressed GPT-2; query GPT-2 before responding"}
