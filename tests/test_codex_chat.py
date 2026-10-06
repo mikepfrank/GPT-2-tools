@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -15,6 +16,7 @@ from gpt2_local.codex_chat import (
     Cancelled, ChatError, CodexChatApplication, main, make_handler,
 )
 from gpt2_local.codex_chat_context import Message
+from gpt2_local.codex_chat_budget import DailyBudgetExceeded
 
 
 class FakeClock:
@@ -196,6 +198,46 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIn("query GPT-2 before responding", self.bridge.responses[1]["error"])
         self.assertNotIn("This is too early.", json.dumps(state))
 
+    def test_requested_recovery_resumes_saved_gpt2_reply_without_repeating_turns(self):
+        self.send("GPT-2, go first", target="gpt2")
+        self.bridge.script = [("query_gpt2", {})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply", return_value=Message("GPT-2", " Saved reply.")):
+            self.run_action()
+        session = self.app.sessions[self.identifier]
+        original_thread = session["thread_id"]
+        session.update(pending_human=False, pending_continuation=True,
+                       last_prompt_index=1, autonomous_turns=0, error=None)
+        self.app._save(session)
+        restarted = self.new_app()
+        restarted.presence(self.identifier, self.owner, True)
+        self.assertEqual(list(restarted.pending), [self.identifier])
+        restarted.bridge.script = [("query_gpt2", {}),
+                                  ("emit_message", {"text": "Thank you for that reply."}),
+                                  ("emit_message", {"text": "A second recovery reply must be suppressed."}),
+                                  ("wait_for_human", {})]
+        with mock.patch("gpt2_local.codex_chat.generate_reply") as generate:
+            state = self.run_action(human=False, app=restarted)
+        generate.assert_not_called()
+        self.assertEqual(self.roles(state), ["Human", "GPT-2", "Codex"])
+        self.assertEqual(restarted.bridge.calls[-1]["thread_id"], original_thread)
+        self.assertIn("already saved GPT-2 reply", restarted.bridge.calls[-1]["prompt"])
+        self.assertFalse(restarted.sessions[self.identifier]["pending_continuation"])
+        self.assertIsNone(restarted._due())
+
+    def test_recovery_may_wait_and_new_human_supersedes_pending_recovery(self):
+        self.send()
+        session = self.app.sessions[self.identifier]
+        session.update(pending_human=False, pending_continuation=True, autonomous_turns=0)
+        self.bridge.script = [("wait_for_human", {})]
+        before = self.app.export(self.identifier, self.owner)["conversation"]
+        state = self.run_action(human=False)
+        self.assertEqual(self.app.export(self.identifier, self.owner)["conversation"], before)
+        self.assertEqual(state["autonomous_turns"], 3)
+        session["pending_continuation"] = True
+        self.send("New human instruction", request_id="supersede_001")
+        self.assertFalse(session["pending_continuation"])
+        self.assertTrue(session["pending_human"])
+
     def test_model_queries_preserve_sequence_and_generation_evidence(self):
         self.send("Codex, introduce yourself", "codex")
         self.bridge.script = [
@@ -227,6 +269,57 @@ class OrchestrationTests(unittest.TestCase):
         errors = [result["error"] for result in self.bridge.responses if "error" in result]
         self.assertEqual(len(errors), 2)
         self.assertTrue(any("query limit" in error for error in errors))
+
+    def test_streaming_preserves_speaker_colors_before_and_during_output(self):
+        self.send("Codex, introduce yourself", "codex")
+        self.bridge.script = [("emit_message", {"text": "Hello."}), ("query_gpt2", {})]
+
+        def generate(conversation, runner, settings, *, on_text, cancelled):
+            for content in ("", " A reply"):
+                if content:
+                    on_text(content)
+                state = self.app.state(self.identifier, self.owner)
+                blocks = state["context_blocks"]
+                self.assertEqual("".join(block["text"] for block in blocks), state["context_text"])
+                self.assertEqual([block["role"] for block in blocks],
+                                 ["context", "Human", "Codex", "GPT-2", "GPT-2"])
+                self.assertEqual(blocks[-1]["text"], content)
+                self.assertEqual(blocks[-2]["text"], "\n\nGPT-2>")
+            return Message("GPT-2", " A reply")
+
+        with mock.patch("gpt2_local.codex_chat.generate_reply", side_effect=generate):
+            state = self.run_action()
+        self.assertEqual([block["role"] for block in state["context_blocks"]],
+                         ["context", "Human", "Codex", "GPT-2"])
+        self.assertEqual("".join(block["text"] for block in state["context_blocks"]), state["context_text"])
+
+    def test_budget_failure_preserves_replies_and_does_not_retry_on_reconnect(self):
+        def fail_after_reply(tool, cancelled):
+            tool("emit_message", {"text": "A saved reply."})
+            raise DailyBudgetExceeded("Private allowance diagnostic")
+
+        self.bridge.script = fail_after_reply
+        self.send("Please reply", "codex")
+        self.app.worker = threading.Thread(target=self.app._work, daemon=True)
+        with redirect_stderr(io.StringIO()):
+            self.app.worker.start()
+            deadline = time.monotonic() + 3
+            with self.app.condition:
+                while self.app.sessions[self.identifier]["status"] != "idle":
+                    if time.monotonic() >= deadline:
+                        self.fail("Worker did not finish the budget failure")
+                    self.app.condition.wait(.01)
+        state = self.app.state(self.identifier, self.owner)
+        self.assertEqual(self.roles(state), ["Human", "Codex"])
+        self.assertIn("daily Codex allowance", state["error"])
+        self.assertNotIn("Private allowance diagnostic", json.dumps(state))
+        self.assertFalse(self.app.sessions[self.identifier]["pending_human"])
+        self.assertEqual(state["autonomous_turns"], 3)
+        self.app.presence(self.identifier, self.owner, False)
+        self.app.presence(self.identifier, self.owner, True)
+        self.clock.now += 1000
+        self.assertIsNone(self.app._due())
+        self.assertEqual(len(self.bridge.calls), 1)
 
     def test_invalid_codex_messages_tools_and_settings_do_not_mutate_history(self):
         self.send()

@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gpt2_local.codex_chat_bridge import CodexChatBridge, CodexError, _safe_environment, _stop_process, validate_message
+from gpt2_local.codex_chat_budget import DailyBudgetExceeded
 
 
 FAKE_SERVER = r'''
@@ -231,6 +232,21 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(calls[1][1]["text"],"A short public paragraph.")
                 state=json.loads((self.root/"data/players"/scenario/"bridge-state.json").read_text())
                 self.assertEqual(state,{"thread_id":"test-thread","usage_total":123})
+
+    def test_trusted_daily_admission_failure_is_typed_before_revocation(self):
+        self.gateway.action_failure=lambda token:{"code":"daily_allowance_exhausted"}
+        with self.assertRaises(DailyBudgetExceeded) as captured:
+            self.bridge("terminal-error").run("chat","Hello",lambda *_:{})
+        self.assertIn("conversation is saved",str(captured.exception))
+        self.assertNotIn("PRIVATE",str(captured.exception))
+        self.assertEqual(self.gateway.revocations,["scoped-test-token"])
+        self.assertTrue((self.root/"data/players/chat/bridge-state.json").exists())
+
+    def test_other_gateway_failure_code_remains_generic(self):
+        self.gateway.action_failure=lambda token:{"code":"provider_rate_limit"}
+        with self.assertRaises(CodexError) as captured:
+            self.bridge("terminal-error").run("chat","Hello",lambda *_:{})
+        self.assertNotIn("PRIVATE",str(captured.exception))
 
 
 if __name__ == "__main__":

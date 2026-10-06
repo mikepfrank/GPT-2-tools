@@ -19,6 +19,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from .codex_chat_budget import DailyBudgetExceeded
+
 MAX_RPC_BYTES = 2_000_000
 TOOL_NAMES = frozenset({"emit_message", "query_gpt2", "wait_for_human", "search_web", "read_web_page"})
 PROVIDER = "gpt2_gateway"
@@ -591,6 +593,12 @@ class CodexChatBridge:
             while not finished:
                 rpc.dispatch()
             return {"thread_id": thread_id, "usage": usage, "final": final}
+        except CodexError as exc:
+            getter = getattr(self.gateway, "action_failure", None)
+            failure = getter(token) if token and callable(getter) else None
+            if isinstance(failure, dict) and failure.get("code") == "daily_allowance_exhausted":
+                raise DailyBudgetExceeded("The UTC daily Codex allowance cannot admit another request; the conversation is saved.") from exc
+            raise
         except OSError as exc:
             raise CodexError("The isolated Codex launcher could not complete the action.") from exc
         finally:

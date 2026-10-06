@@ -35,6 +35,9 @@
     .subtitle { color: var(--muted); font-size: .85rem; margin: 5px 0 0; }
     .beta { display: inline-block; vertical-align: middle; margin-left: 8px; font-size: .65rem; border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
+    .new-chat-controls { display: flex; align-items: center; gap: 10px; }
+    .example-option { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .76rem; cursor: pointer; }
+    .example-option input { margin: 0; padding: 0; accent-color: var(--accent); }
     .tools { position: relative; }
     .tools summary { list-style: none; cursor: pointer; border: 1px solid var(--line); border-radius: 7px; padding: 9px 13px; background: var(--panel); font-weight: 600; }
     .tools summary::-webkit-details-marker { display: none; }
@@ -143,20 +146,15 @@
             <button id="save-settings" type="button" disabled>Apply temperature</button>
           </div>
         </details>
-        <details class="tools" id="new-details">
-          <summary>New chat</summary>
-          <div class="settings-card">
-            <label for="example-rounds">Seeded example rounds</label>
-            <select id="example-rounds"><option value="0">0 examples</option><option value="1" selected>1 example</option><option value="2">2 examples</option></select>
-            <p>Your current chat stays saved privately. A new chat starts its own history.</p>
-            <button id="new-chat" type="button">Start new chat</button>
-          </div>
-        </details>
+        <div class="new-chat-controls">
+          <label class="example-option" for="include-example"><input id="include-example" type="checkbox">Include an example round</label>
+          <button id="new-chat" type="button" title="Your current chat stays saved privately. A new chat starts its own history.">New chat</button>
+        </div>
       </div>
     </header>
     <div class="session-bar">
       <span class="connection"><span id="status-dot" class="dot"></span><span id="status" role="status" aria-live="polite">Connecting…</span></span>
-      <span id="budget" class="budget" title="Shared daily API allowance, measured in UTC. Requests charge conservative allowances before execution. GPT-2 runs locally.">Daily API allowance: — / $10.00</span>
+      <span id="budget" class="budget" title="Shared daily API allowance, measured in UTC. Known usage estimates and unresolved reservations count toward the limit. GPT-2 runs locally.">Daily API allowance: — / $10.00</span>
     </div>
     <div class="workspace">
       <section class="panel" aria-labelledby="context-title">
@@ -230,13 +228,20 @@
         return "Ready for your message";
       }
       function budgetText(budget) {
-        if (!budget || !Number.isFinite(budget.admitted_usd) || !Number.isFinite(budget.daily_limit_usd)) return "Daily API allowance: — / $10.00";
-        return `Daily API allowance: $${budget.admitted_usd.toFixed(2)} / $${budget.daily_limit_usd.toFixed(2)}`;
+        const charged = budget && (Number.isFinite(budget.charged_usd) ? budget.charged_usd : budget.admitted_usd);
+        if (!Number.isFinite(charged) || !Number.isFinite(budget.daily_limit_usd)) return "Daily API allowance: — / $10.00";
+        return `Daily API allowance: $${charged.toFixed(2)} / $${budget.daily_limit_usd.toFixed(2)}`;
       }
       function budgetTooltip(budget) {
         const day = budget && typeof budget.utc_day === "string" ? ` for ${budget.utc_day}` : "";
-        const estimate = budget && Number.isFinite(budget.reported_estimate_usd) ? ` Reported usage estimate: $${budget.reported_estimate_usd.toFixed(2)}.` : "";
-        return `Shared API allowance${day} (UTC). Each request charges a conservative allowance before execution, including interrupted requests.${estimate} GPT-2 runs locally.`;
+        const estimate = budget && Number.isFinite(budget.reported_estimate_usd) ? ` Known usage estimate: $${budget.reported_estimate_usd.toFixed(2)}.` : "";
+        const held = budget && Number.isFinite(budget.unsettled_reserved_usd) ? ` Unresolved reservations: $${budget.unsettled_reserved_usd.toFixed(2)}.` : "";
+        const resetDate = budget && Number.isFinite(budget.reset_at) ? new Date(budget.reset_at * 1000) : null;
+        const reset = resetDate && Number.isFinite(resetDate.getTime()) ? ` Counter reset at ${resetDate.toISOString()}; earlier requests remain in the audit history.` : "";
+        const accounting = budget && Number.isFinite(budget.charged_usd)
+          ? " Known usage estimates and unresolved reservations count toward the limit. Unused reserved allowance is released when complete usage is reported."
+          : " Conservative admission allowances are shown until settled usage is available.";
+        return `Shared API allowance${day} (UTC).${accounting}${estimate}${held}${reset} Usage estimates are conservative, not an invoice. Unknown or interrupted requests keep their full reservations. GPT-2 runs locally.`;
       }
       function messageTime(value, full = false) {
         if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return "";
@@ -256,7 +261,7 @@
     "use strict";
     const helpers = CodexChatHelpers;
     const element = id => document.getElementById(id);
-    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "example-rounds", "new-chat", "new-details", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "reconnect"].map(id => [id, element(id)]));
+    const ui = Object.fromEntries(["pause", "export", "temperature", "save-settings", "include-example", "new-chat", "settings-details", "status", "status-dot", "budget", "token-count", "token-meter", "token-used", "token-reserve", "context", "message-count", "history", "messages", "active-message", "active-role", "active-content", "history-note", "latest", "composer", "message", "target", "send", "notice", "notice-text", "notice-actions", "retry-message", "reconnect"].map(id => [id, element(id)]));
     const base = helpers.apiBase(location.href);
     const key = helpers.storageKey(location.href);
     let sessionId = readSaved("session");
@@ -293,6 +298,7 @@
       ui.export.disabled = !state;
       ui["save-settings"].disabled = unavailable || helpers.isBusy(state);
       ui["new-chat"].disabled = mutation;
+      ui["include-example"].disabled = mutation;
       ui.target.disabled = mutation || Boolean(pending);
       ui.composer.setAttribute("aria-busy", String(mutation || helpers.isBusy(state)));
       ui.pause.textContent = state && state.paused ? "Resume activity" : "Pause activity";
@@ -313,14 +319,16 @@
       ui["status-dot"].classList.toggle("busy", !connectionError && helpers.isBusy(state));
     }
     function renderContext(incoming) {
-      if (incoming.context_text === lastContext) return;
+      const blocks = helpers.contextBlocks(incoming);
+      const signature = JSON.stringify(blocks);
+      if (signature === lastContext) return;
       const follow = lastContext === null || atBottom(ui.context);
       const fragment = document.createDocumentFragment();
-      for (const block of helpers.contextBlocks(incoming)) {
+      for (const block of blocks) {
         const span = document.createElement("span");
         span.className = helpers.roles[block.role] || ""; span.textContent = block.text; fragment.appendChild(span);
       }
-      ui.context.replaceChildren(fragment); lastContext = incoming.context_text;
+      ui.context.replaceChildren(fragment); lastContext = signature;
       if (follow) ui.context.scrollTop = ui.context.scrollHeight;
     }
     function renderHistory(incoming) {
@@ -400,11 +408,11 @@
       mutation = true; clearTimeout(timer); refreshControls(); actionError = "";
       const oldId = sessionId;
       try {
-        const incoming = await request("sessions", {example_rounds: Number(ui["example-rounds"].value)});
+        const incoming = await request("sessions", {example_rounds: ui["include-example"].checked ? 1 : 0});
         if (oldId) await presence(false);
         sessionEpoch++; pollSequence++; state = null; historySignature = ""; lastContext = null;
         pending = null; save("pending", null); ui.message.value = ""; connectionError = ""; failures = 0;
-        applyState(incoming, true); ui["new-details"].open = false; await presence(true); ui.message.focus();
+        applyState(incoming, true); await presence(true); ui.message.focus();
       } catch (error) { actionError = error.message; refreshNotice(); }
       finally { mutation = false; refreshControls(); schedule(); }
     }

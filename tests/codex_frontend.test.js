@@ -28,6 +28,27 @@ test("API and saved-session scope stay under the private chat URL", () => {
   assert.notEqual(helpers.storageKey(privateUrl), helpers.storageKey("https://gpt2-chat.com/closed-beta/"));
 });
 
+test("new chats are unseeded by default and each creation reads the visible example checkbox", async () => {
+  const checkbox = html.match(/<input\s[^>]*id="include-example"[^>]*>/)[0];
+  assert.match(checkbox, /type="checkbox"/);
+  assert.doesNotMatch(checkbox, /\bchecked\b/);
+  assert.match(html, />Include an example round<\/label>/);
+  const createSource = scripts[1].match(/    async function createSession\(\) \{[\s\S]*?\n    \}/)[0];
+  const calls = [];
+  const ui = {"include-example": {checked: false}, message: {value: "", focus() {}}};
+  const creator = vm.createContext({ui, clearTimeout() {}, refreshControls() {}, refreshNotice() {},
+    save() {}, schedule() {}, applyState() {}, presence: async () => {},
+    request: async (route, body) => { calls.push({route, body: plain(body)}); return {session_id: "new"}; }});
+  vm.runInContext("let mutation=false,timer=null,actionError='',sessionId=null,sessionEpoch=0,pollSequence=0,state=null,historySignature='',lastContext=null,pending=null,connectionError='',failures=0;\n"+createSource, creator);
+  await vm.runInContext("createSession()", creator);
+  ui["include-example"].checked = true;
+  await vm.runInContext("createSession()", creator);
+  ui["include-example"].checked = false;
+  await vm.runInContext("createSession()", creator);
+  assert.deepEqual(calls, [{route: "sessions", body: {example_rounds: 0}},
+    {route: "sessions", body: {example_rounds: 1}}, {route: "sessions", body: {example_rounds: 0}}]);
+});
+
 test("role coloring preserves exact prompt whitespace and delimiter text", () => {
   const blocks = [{role: "context", text: "Header: three participants.\n"},
     {role: "Human", text: "\n\nHuman> Hello 😀"},
@@ -37,6 +58,35 @@ test("role coloring preserves exact prompt whitespace and delimiter text", () =>
   const state = {context_text: blocks.map(block => block.text).join(""), context_blocks: blocks};
   assert.deepEqual(plain(helpers.contextBlocks(state)), blocks);
   assert.equal(helpers.contextBlocks(state).map(block => block.text).join(""), state.context_text);
+});
+
+test("context recolors when role blocks change even if the streamed text is identical", () => {
+  const renderSource = scripts[1].match(/    function renderContext\(incoming\) \{[\s\S]*?\n    \}/)[0];
+  const renders = [];
+  const contextNode = {scrollTop: 0, scrollHeight: 700, clientHeight: 250,
+    replaceChildren(fragment) { renders.push(fragment.children); }};
+  const document = {
+    createDocumentFragment: () => ({children: [], appendChild(node) { this.children.push(node); }}),
+    createElement: () => ({className: "", textContent: ""})
+  };
+  const renderer = vm.createContext({helpers, ui: {context: contextNode}, document, atBottom: () => false});
+  vm.runInContext("let lastContext = null;\n" + renderSource, renderer);
+  const blocks = [{role: "context", text: "Header"}, {role: "Human", text: "\n\nHuman> Hello"},
+    {role: "Codex", text: "\n\nCodex> Hi."}, {role: "GPT-2", text: "\n\nGPT-2> A reply."}];
+  const exact = blocks.map(block => block.text).join("");
+  renderer.incoming = {context_text: exact, context_blocks: [{role: "context", text: exact}]};
+  vm.runInContext("renderContext(incoming)", renderer);
+  assert.equal(renders.length, 1);
+  assert.equal(renders[0][0].className, "");
+  contextNode.scrollTop = 28;
+  renderer.incoming = {context_text: exact, context_blocks: blocks};
+  vm.runInContext("renderContext(incoming)", renderer);
+  assert.equal(renders.length, 2);
+  assert.deepEqual(renders[1].map(node => node.className), ["", "role-human", "role-codex", "role-gpt2"]);
+  assert.equal(renders[1].map(node => node.textContent).join(""), exact);
+  assert.equal(contextNode.scrollTop, 28, "recoloring must preserve a reader's scroll position");
+  vm.runInContext("renderContext(incoming)", renderer);
+  assert.equal(renders.length, 2, "an identical snapshot does not rebuild the context");
 });
 
 test("mismatched or unknown role blocks fall back to the authoritative complete prompt", () => {
@@ -87,16 +137,39 @@ test("status explains autonomous waiting, pause and active turns", () => {
   assert.equal(helpers.describeStatus({status: "error", error: "budget exhausted"}), "Conversation needs attention");
 });
 
-test("daily allowance displays conservative admission charges independently of reported estimates", () => {
-  const budget = {utc_day: "2026-10-05", daily_limit_usd: 10, admitted_usd: 1.235,
-    remaining_usd: 8.765, reported_estimate_usd: .43, requests: 3, unknown_usage_requests: 1};
-  assert.equal(helpers.budgetText(budget), "Daily API allowance: $1.24 / $10.00");
-  assert.equal(helpers.budgetText({...budget, admitted_usd: 0}), "Daily API allowance: $0.00 / $10.00");
-  assert.equal(helpers.budgetText({...budget, admitted_usd: "unknown"}), "Daily API allowance: — / $10.00");
+test("daily allowance uses settled estimates plus unresolved reservations instead of gross historical admissions", () => {
+  const budget = {utc_day: "2026-10-05", daily_limit_usd: 10, admitted_usd: 9.82,
+    charged_usd: .735, unsettled_reserved_usd: .305, remaining_usd: 9.265,
+    reported_estimate_usd: .43, requests: 3, unknown_usage_requests: 1};
+  assert.equal(helpers.budgetText(budget), "Daily API allowance: $0.73 / $10.00");
+  assert.equal(helpers.budgetText({...budget, charged_usd: 0}), "Daily API allowance: $0.00 / $10.00");
+  assert.equal(helpers.budgetText({...budget, admitted_usd: "unknown"}), "Daily API allowance: $0.73 / $10.00");
   assert.match(helpers.budgetTooltip(budget), /2026-10-05 \(UTC\)/);
-  assert.match(helpers.budgetTooltip(budget), /conservative allowance before execution, including interrupted requests/);
-  assert.match(helpers.budgetTooltip(budget), /Reported usage estimate: \$0\.43/);
+  assert.match(helpers.budgetTooltip(budget), /Unused reserved allowance is released when complete usage is reported/);
+  assert.match(helpers.budgetTooltip(budget), /Known usage estimate: \$0\.43/);
+  assert.match(helpers.budgetTooltip(budget), /Unresolved reservations: \$0\.30/);
+  assert.match(helpers.budgetTooltip(budget), /Unknown or interrupted requests keep their full reservations/);
+  assert.match(helpers.budgetTooltip(budget), /conservative, not an invoice/);
   assert.doesNotMatch(helpers.budgetText(budget), /estimate|reserved|spent/);
+});
+
+test("allowance rendering remains compatible with a server that has not exposed settlement fields yet", () => {
+  const old = {utc_day: "2026-10-05", daily_limit_usd: 10, admitted_usd: 9.82, reported_estimate_usd: .43};
+  assert.equal(helpers.budgetText(old), "Daily API allowance: $9.82 / $10.00");
+  assert.match(helpers.budgetTooltip(old), /Conservative admission allowances are shown until settled usage is available/);
+  assert.doesNotMatch(helpers.budgetTooltip(old), /Unresolved reservations:/);
+  for (const unavailable of [null, {}, {...old, admitted_usd: "unknown"}, {...old, daily_limit_usd: null}]) {
+    assert.equal(helpers.budgetText(unavailable), "Daily API allowance: — / $10.00");
+  }
+});
+
+test("the allowance tooltip explains an operator reset while the visible counter starts at zero", () => {
+  const budget = {utc_day: "2026-10-05", daily_limit_usd: 10, charged_usd: 0,
+    admitted_usd: 0, unsettled_reserved_usd: 0, reported_estimate_usd: 0,
+    reset_at: Date.UTC(2026, 9, 5, 16, 30) / 1000};
+  assert.equal(helpers.budgetText(budget), "Daily API allowance: $0.00 / $10.00");
+  assert.match(helpers.budgetTooltip(budget), /Counter reset at 2026-10-05T16:30:00\.000Z; earlier requests remain in the audit history/);
+  assert.doesNotThrow(() => helpers.budgetTooltip({...budget, reset_at: 1e100}));
 });
 
 test("server Unix-second timestamps and ISO timestamps display the same local time", () => {

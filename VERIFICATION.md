@@ -1568,9 +1568,11 @@ differently from private anonymous allocations.
 
 The durable daily ledger at this checkpoint showed **$2.658415 admitted from
 the $10 UTC allowance**, and a **$0.319115 reported-usage estimate**. These
-figures preceded further live checks. The admitted amount is the conservative,
-nonrefundable local reservation total, while reported usage is a separate
-estimate; neither number is a provider invoice or an account-wide spending cap.
+figures preceded further live checks. At this initial checkpoint the original
+policy permanently charged the conservative reservation total, while reported
+usage was a separate estimate. That policy was superseded by the first-turn
+settlement correction below. Neither number is a provider invoice or an
+account-wide spending cap.
 
 ### Final child workflow, cancellation, and HTTPS acceptance
 
@@ -1607,7 +1609,8 @@ KV caches and intermediate allocations still belong to their own process.
 
 The later ledger snapshot recorded **$8.317800 admitted from $10**,
 **$1.083945 reported-usage estimate**, and **one request with unknown usage**
-after interruption. Reservations remained charged. Further activity can
+after interruption. Under the original policy, reservations remained fully
+charged even when usage was known. Further activity can
 change these numbers; they are not a provider invoice.
 
 The initial Google search response was a stub without useful results.
@@ -1625,3 +1628,172 @@ sustained throughput, reboot/autostart recovery, or a live rollback. Additional
 results and completion evidence should be appended when those checks
 finish. The beta capability path, owner cookies, credentials, private Codex
 state, and detailed chat evidence remain outside public source/documentation.
+
+## First user-turn follow-up: display and ledger settlement, October 5 CDT
+
+The Human's first turn committed a Codex contribution and a GPT-2 reply before
+a later API request encountered the beta admission gate (HTTP 429). Private
+conversation text and the capability URL are intentionally omitted here.
+The preceding testing had accumulated **$8.317800** in gross reservations;
+the user turn reserved another **$1.503555**, making historical admissions
+**$9.821355**. Reported user-turn counts were **34,059 input tokens** and
+**420 output tokens**. The former **$0.176595** figure applied a blanket
+long-context $5/$15 estimate to these short requests; it was a wrong-tier upper
+estimate, not an actual user charge. Ordinary short-context rates give
+**$0.072318**, and treating all input as short-context cache writes gives an
+upper **$0.0893475** before currency rounding. Historical cache details are
+unknown, so the provider's actual billed amount is not reconstructed.
+Chess-service usage did not enter the beta ledger.
+
+Two separate display mechanisms caused retained context to lose speaker
+colors. The backend flattened the active prompt into one context-role block,
+and the browser skipped rendering when exact text matched its text-only cache,
+even if the role-block structure had changed. The follow-up preserves prepared
+role blocks during generation and compares block structure in the browser's
+render cache. The later regression and live follow-up results are recorded
+below.
+
+The old admission policy held every byte-based reservation permanently after
+known usage was reported. The first proposed correction settled valid
+reported input/output counts at the blanket $5/$15 token estimate and
+releases unused reservation. Unknown or in-flight usage retains the complete
+original hold. Existing admission records are preserved; historical
+`admitted_usd` stays an audit total, and new `charged_usd` drives the daily
+limit and UI remaining amount. The configured cap remains **$10 per UTC day**.
+
+Applying that former blanket-rate basis to the existing records gave the
+following historical, superseded estimate:
+
+| Component | USD |
+| --- | ---: |
+| All known reported-usage upper estimates | 1.260540 |
+| Full hold for the interrupted request with unknown usage | 0.632355 |
+| Charged total | 1.892895 |
+| Remaining from $10 | 8.107105 |
+| Historical gross admissions, retained for audit | 9.821355 |
+
+That blanket-rate estimate was replaced by the published request tiers and
+cache accounting described below. Prices were checked against
+[OpenAI's pricing table](https://developers.openai.com/api/docs/pricing) on
+October 5, 2026 CDT. No provider invoice is reconstructed from these counters.
+No deployment success is claimed for this intermediate calculation.
+
+## Final follow-up policy: tiered usage, audited reset, and saved-reply resume
+
+The owner explicitly requested that development costs be excluded and the
+current daily allowance usage reset to **zero**, without raising its **$10**
+cap. `DailyBudgetLedger.reset_daily_allowance()` records the current UTC day,
+reset timestamp, and admission-row cutoff in a transaction. All earlier rows
+and usage remain available for audit but are excluded from the new accounting
+period. Later usage reports still update their original excluded row. The
+reset procedure is documented in [`docs/CODEX-CHAT.md`](docs/CODEX-CHAT.md).
+The reset and saved-reply continuation were later verified live below.
+Future real-model development must use a separate ledger; model-free tests
+do not make billable requests. Chess usage is outside this beta ledger.
+
+Final settlement uses authoritative completed usage and the published standard
+request tiers, per million tokens:
+
+| Input token count per request | Ordinary | Cache read | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $2 | $0.10 | $2.50 | $10 |
+| Above 272,000 | $4 | $0.20 | $5 | $15 |
+
+Known cache-read/write counts select their rates. Missing write counts cause
+all noncached input to be estimated at the applicable cache-write rate.
+Requests without an authoritative final usage report retain the entire
+original long-context admission hold, including canceled/failed partial
+streams. A successful final JSON report or SSE `response.completed` supplies
+completed usage. A later client cancellation or failure before transport EOF
+must not discard that captured report. Unused reservation is released after
+completed usage is known;
+the first complete report settles its row. Older blanket-rate estimates are
+retained in legacy audit fields when recomputed. This is conservative local
+accounting, not a reconstructed provider invoice. The threshold is documented
+on [OpenAI's model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+and rates are on [OpenAI's pricing page](https://developers.openai.com/api/docs/pricing).
+
+The owner also explicitly requested that Codex resume after the already saved
+GPT-2 reply. A durable `pending_continuation` event tells Codex to respond or
+wait using that saved reply and disallows another GPT-2 query. It must survive
+restart and avoid replaying the Human input or regenerating GPT-2. The browser
+replaces the example-round selector with an **Include an example round** checkbox,
+unchecked by default. Color rendering retains prepared role blocks and includes
+their structure in the render cache.
+
+The focused model-free suites passed **20 budget tests** and **15 frontend
+tests** after these changes. The first full run exposed an autonomous counter
+increment after Codex chose to wait for the Human; the wait path was corrected,
+and all **22 orchestration tests** passed. The final complete Linux rerun
+completed **370 tests in 24.495 seconds, with one existing skip**, and all
+**52 Node frontend tests passed**. These checks include tier/cache accounting,
+additive audit migration, canceled/failed request holds, reset cutoffs and late
+usage, saved-reply continuation, and the unchecked example-round control.
+They make no billable model calls.
+
+This section records the final requested policy and implemented approach.
+The following live check confirmed deployment, zero reset, continuation, and
+browser behavior. The subsequent terminal-usage transport-race correction
+also passed targeted verification and was deployed as recorded below.
+
+### Live follow-up reset and continuation
+
+The operator backed up beta SQLite/source/chat state before stopping and
+updating only the beta service. Reset confirmed **$0 used / $10 remaining**,
+retaining all **22 earlier admission records**. All **five saved messages**,
+conversation metadata, Codex thread identity, owner/settings, and request IDs
+were preserved byte for byte. The saved GPT-2 reply was queued as a durable
+continuation. Codex made two requests and chose `wait_for_human`, without
+appending any message or replaying GPT-2. The session returned idle with no
+error, no pending continuation, and autonomous count three.
+
+Browser reload confirmed the example checkbox unchecked, Send enabled, and
+ready/waiting status without an error. Role classes rendered distinct measured
+CSS colors: Human `rgb(134, 189, 232)`, GPT-2 `rgb(236, 170, 140)`, and Codex
+`rgb(188, 169, 244)`. Existing PIDs **91398 / 4149 / 4313 / 4341** were unchanged,
+and all **five checked HTTPS health routes returned 200**.
+
+Private recorded token-count metadata supplied previously missing cache
+details. No private chat text is reproduced here. The original user turn had
+**34,059 input**, including **24,282 cache reads**, **9,765 cache writes**, and
+**12 ordinary input tokens**, plus **420 output tokens**. Published short-tier
+rates give **$0.0310647 before rounding each request**. This supersedes the
+earlier $0.072318 ordinary-only and $0.0893475 all-write assumptions; none is
+a provider invoice.
+
+The resumed continuation's first request reported **15,128 input / 9,765 cache
+read / 5,360 cache write / 16 output**, estimated at **$0.014543** after rounding.
+Its second reported **15,162 input / 15,125 cache read / 34 cache write / 4
+output**, estimated at **$0.001644**. Their combined rounded estimate is
+**$0.016187**. The zero reset excluded the preceding development/user audit
+rows, while these new continuation requests belong to the new allowance period.
+
+The second request exposed a shutdown race: the bridge revoked its transport
+after Codex completed, before HTTP EOF, leaving a full reservation despite a
+recorded final completion. The gateway correction accepts authoritative final
+usage even when later transport is canceled, while retaining full holds for
+incomplete streams. All **22 targeted Linux gateway tests passed in 11.129
+seconds**. This targeted result follows the complete **370-test Linux run
+(one existing skip)** and **52 passing Node tests**; the complete suite was
+not rerun after the gateway-only correction.
+
+The corrected gateway was deployed after all chats were idle and no agent
+containers remained. The beta service returned active, all chat data remained
+preserved, and no continuation was repeated. The operator matched the final
+request's completed Codex token-count metadata and its preceding ledger request
+before recording its authoritative usage as completed. The private
+`continuation-usage-reconciliation.json` audit remains in the operator's backup
+directory. No additional model calls were made for this reconciliation.
+
+The resulting live allowance snapshot contains **two requests**, **$0.016187
+charged**, **$0 unsettled reservations**, and **$9.983813 remaining**. These
+are local tier/cache usage estimates, not a reconstructed provider invoice.
+
+After the final gateway update, certified beta HTTPS health returned 200;
+all four existing public/chess endpoints also returned 200 and their service
+PIDs remained unchanged. The preserved conversation, message metadata, Codex
+thread, owner, settings and request identifiers matched the pre-update backup.
+The side-panel browser showed **Ready · waiting for you**, an enabled composer,
+no error, distinct speaker colors, an unchecked example-round checkbox and
+**$0.02 / $10.00**. The five deployed runtime/UI files matched local SHA-256
+hashes. The private screenshot is outside the repository.

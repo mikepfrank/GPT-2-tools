@@ -123,10 +123,15 @@ class _Scope:
     cancelled: threading.Event = field(default_factory=threading.Event)
     closers: set = field(default_factory=set)
     timer: object = None
+    failure_code: str | None = None
 
 
 class _UsageReader:
-    """Extract only numeric usage; never persist the request or SSE transcript."""
+    """Keep authoritative completed-response usage, never interim SSE usage.
+
+    The complete usage mapping is preserved for the ledger's own validation of
+    totals, cached reads and cache writes. No request or transcript is persisted.
+    """
     def __init__(self, streaming):
         self.streaming = streaming
         self.buffer = bytearray()
@@ -148,7 +153,17 @@ class _UsageReader:
         try:
             value = json.loads(data)
             if isinstance(value, dict):
-                usage = value.get("usage") or value.get("response", {}).get("usage")
+                if self.streaming:
+                    if value.get("type") != "response.completed":
+                        return
+                    response = value.get("response")
+                    if not isinstance(response, dict) or response.get("status", "completed") != "completed":
+                        return
+                else:
+                    response = value
+                    if response.get("status") != "completed":
+                        return
+                usage = response.get("usage")
                 if isinstance(usage, dict):
                     self.usage = usage
         except (ValueError, UnicodeError, AttributeError):
@@ -203,6 +218,14 @@ class CodexAPIGateway:
                 closer()
             except OSError:
                 pass
+
+    def action_failure(self, token):
+        """Trusted action failure metadata, available until the scope is revoked."""
+        with self._lock:
+            scope = self._scopes.get(token)
+            if scope and scope.failure_code:
+                return {"code": scope.failure_code}
+        return None
 
     def _scope(self, authorization):
         if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
@@ -281,7 +304,6 @@ class CodexAPIGateway:
                     return self._json(429, {"error": {"message": "All gateway request slots are occupied."}})
                 admission = connection = None
                 abort = None
-                connection_close_lock = threading.Lock()
                 sent = False
                 outcome = "network_error"
                 reader = _UsageReader(body.get("stream", False))
@@ -293,20 +315,27 @@ class CodexAPIGateway:
 
                     def abort(active_connection=connection):
                         # Capture the admitted connection, not a mutable outer
-                        # binding, and serialize teardown against the HTTP worker.
-                        with connection_close_lock:
-                            sock = getattr(active_connection, "sock", None)
-                            if sock:
-                                try:
-                                    sock.shutdown(socket.SHUT_RDWR)
-                                except OSError:
-                                    pass
-                            active_connection.close()
+                        # binding. Shutdown wakes the read without racing
+                        # HTTPResponse.close; only the HTTP worker closes it.
+                        sock = getattr(active_connection, "sock", None)
+                        if sock:
+                            try:
+                                sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
 
                     with gateway._lock:
                         if scope.cancelled.is_set():
                             raise OSError("Cancelled")
                         scope.closers.add(abort)
+                    if scope.cancelled.is_set():
+                        raise OSError("Cancelled before connection")
+                    connection.connect()
+                    # If revocation raced TLS setup, do not send an API request.
+                    # Later revocation shuts this established socket down, so
+                    # request() cannot silently reconnect after a close race.
+                    if scope.cancelled.is_set():
+                        raise OSError("Cancelled during connection")
                     connection.request("POST", "/v1/responses", body=encoded, headers={
                         "Authorization": "Bearer "+gateway._api_key,
                         "Content-Type": "application/json", "Accept": "text/event-stream" if body.get("stream") else "application/json"})
@@ -330,8 +359,12 @@ class CodexAPIGateway:
                     if scope.cancelled.is_set():
                         outcome = "cancelled"
                 except DailyBudgetExceeded:
+                    with gateway._lock:
+                        scope.failure_code = "daily_allowance_exhausted"
                     self._json(429, {"error": {"message": "The UTC daily Codex allowance is exhausted."}})
                 except (OSError, http.client.HTTPException):
+                    if scope.cancelled.is_set():
+                        outcome = "cancelled"
                     if not sent:
                         self._json(502, {"error": {"message": "API connection interrupted; any admission remains charged."}})
                 finally:
@@ -339,10 +372,14 @@ class CodexAPIGateway:
                         with gateway._lock:
                             if abort:
                                 scope.closers.discard(abort)
-                        with connection_close_lock:
-                            connection.close()
+                        connection.close()
                     if admission:
-                        gateway.ledger.record_result(admission["id"], status=outcome, usage=reader.finish())
+                        # Provider completion is authoritative even if the
+                        # client cancels or a socket fails before trailing EOF.
+                        # The reader never returns interim/incomplete usage.
+                        settled_usage = reader.finish()
+                        settled_outcome = "completed" if settled_usage is not None else outcome
+                        gateway.ledger.record_result(admission["id"], status=settled_outcome, usage=settled_usage)
                     gateway._slots.release()
 
         self._server = ThreadingHTTPServer((self.host, self.port), Handler)

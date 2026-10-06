@@ -65,6 +65,32 @@ service PIDs and the original Caddy configuration prefix remain unchanged.
 See `VERIFICATION.md` for memory/budget snapshots and remaining cold-start,
 reboot, load, and live rollback limits.
 
+The first user-turn follow-up corrects active-context role colors and overly
+conservative permanent API reservations. Final settlement uses authoritative
+completed usage, published <=272,000/>272,000 input tiers, and cache read/write
+counts; missing write counts conservatively price all noncached input as
+cache writes. Requests without authoritative final usage remain fully held; `charged_usd`
+drives admission/UI amounts, keeping the $10 cap unchanged.
+The owner ordered current allowance reset to zero and development excluded.
+Use `reset_daily_allowance()` to preserve prior audit rows with a timestamp/
+cutoff; future real development gets a separate ledger. Model-free tests and
+chess usage do not charge this beta allowance. The owner also requested Codex
+resume after the saved GPT-2 reply: durable `pending_continuation` must respond
+or wait without replaying GPT-2. The browser's new **Include an example round**
+checkbox is unchecked by default. The complete final follow-up suite ran 370
+Python tests successfully with one existing skip, and all 52 Node tests passed.
+Live beta-only deployment preserved all 22 prior admissions and five chat
+messages with metadata byte for byte; reset confirmed $0/$10, Codex resumed
+the saved reply and chose to wait, and browser colors/unchecked checkbox/ready
+controls passed. Existing service PIDs and all five checked HTTPS health routes
+remain healthy. A final gateway fix settles captured `response.completed`
+usage even if trailing transport is canceled; all 22 targeted Linux gateway
+tests passed in 11.129 seconds and that correction is deployed. Private
+audited reconciliation settled two continuation requests at $0.016187 total,
+with no unresolved holds and $9.983813 remaining. No extra model calls or
+repeated continuation occurred. Historical rollout estimates stay in
+`VERIFICATION.md`.
+
 ## Public-service development
 
 Public-service work lives in `codex/gpt2-public`, branched from chat tip

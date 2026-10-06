@@ -71,6 +71,20 @@ private history, while Codex can run background tools and invite GPT-2 to
 respond. See [the beta guide](docs/CODEX-CHAT.md) for behavior, deployment,
 isolation, and the configurable daily API allowance.
 
+The default $10 UTC daily beta allowance covers this application's gateway
+requests, including its subagents. Known usage settles at conservative token
+rates for the reported request tier/cache counts and releases unused holds;
+unknown and active requests retain their full reservations. The owner-requested
+zero reset preserves older records with an audit cutoff. Future development
+uses separate accounting; chess costs are separate. New browser chats start
+with **Include an example round** unchecked. A saved GPT-2 reply can be followed
+by an explicitly resumed Codex response without replaying GPT-2. These final
+follow-up changes passed 370 Python tests with one existing skip and 52 Node
+tests. Live checks confirmed the zero reset, saved-reply continuation, colors,
+and ready chat. The final terminal-usage correction passed 22 targeted gateway
+tests and is deployed; audited continuation usage leaves $9.983813 of the
+$10 allowance. Details are in [VERIFICATION.md](VERIFICATION.md).
+
 ## Public anonymous chat
 
 The public beta is available at

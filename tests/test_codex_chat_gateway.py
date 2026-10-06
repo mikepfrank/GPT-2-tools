@@ -1,5 +1,6 @@
 from http.client import HTTPConnection
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 from pathlib import Path
 import tempfile
@@ -8,14 +9,14 @@ import time
 import unittest
 
 from gpt2_local.codex_chat_budget import DailyBudgetLedger
-from gpt2_local.codex_chat_gateway import CodexAPIGateway, GatewayPolicyError, validate_request
+from gpt2_local.codex_chat_gateway import CodexAPIGateway, GatewayPolicyError, _UsageReader, validate_request
 
 
 class FakeResponse:
     status = 200
     def __init__(self, streaming=False):
-        self.parts = ([b'data: {"type":"response.completed","response":{"usage":{"input_tokens":20,"output_tokens":3}}}\n\n']
-                      if streaming else [b'{"usage":{"input_tokens":20,"output_tokens":3},"output":[]}'])
+        self.parts = ([b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}\n\n']
+                      if streaming else [b'{"status":"completed","usage":{"input_tokens":20,"output_tokens":3},"output":[]}'])
     def read1(self, size):
         return self.parts.pop(0) if self.parts else b""
 
@@ -28,6 +29,8 @@ class FakeConnection:
         self.calls.append((args, kwargs))
         if self.failure:
             raise OSError("network failure")
+    def connect(self):
+        pass
     def getresponse(self):
         return FakeResponse(self.streaming)
     def close(self):
@@ -72,7 +75,7 @@ class GatewayTests(unittest.TestCase):
         status, payload = self.request({"model":"gpt-6.1-sol","input":"Hello","stream":True})
         self.assertEqual(status,200)
         self.assertIn(b'response.completed',payload)
-        self.assertEqual(self.ledger.snapshot()["reported_estimate_usd"],.000145)
+        self.assertEqual(self.ledger.snapshot()["reported_estimate_usd"],.000080)
 
     def test_invalid_and_revoked_tokens_never_forward(self):
         self.assertEqual(self.request(token="not-a-token")[0],401)
@@ -146,7 +149,7 @@ class GatewayTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(GatewayPolicyError):
                 validate_request(json.dumps(body).encode())
 
-    def test_cancellation_captures_connection_and_serializes_teardown(self):
+    def test_cancellation_shuts_down_socket_and_worker_alone_closes(self):
         entered=threading.Event()
         closed=threading.Event()
         lock=threading.Lock()
@@ -159,6 +162,10 @@ class GatewayTests(unittest.TestCase):
                     raise OSError("Test timed out waiting for cancellation")
                 return b""
         class BlockingConnection(FakeConnection):
+            class Sock:
+                def shutdown(self,_how):
+                    closed.set()
+            sock=Sock()
             def getresponse(self):
                 return BlockingResponse()
             def close(self):
@@ -184,9 +191,207 @@ class GatewayTests(unittest.TestCase):
             self.assertEqual(pending.result(timeout=5)[0],200)
         self.assertEqual(errors,[])
         self.assertEqual(counts["maximum"],1)
-        self.assertEqual(counts["closes"],2)
+        self.assertEqual(counts["closes"],1)
         self.assertGreater(self.ledger.snapshot()["admitted_usd"],0)
         self.assertEqual(self.request()[0],401)
+
+    def test_only_ledger_rejection_sets_typed_action_failure(self):
+        self.gateway.ledger=DailyBudgetLedger(Path(self.temp.name)/"tiny.sqlite3",daily_limit_usd=.01)
+        self.assertEqual(self.request()[0],429)
+        self.assertEqual(self.gateway.action_failure(self.token),{"code":"daily_allowance_exhausted"})
+        self.assertEqual(self.calls,[])
+        self.gateway.revoke(self.token)
+        self.assertIsNone(self.gateway.action_failure(self.token))
+
+    def test_provider_and_slot_limits_do_not_set_budget_failure(self):
+        class RejectedConnection(FakeConnection):
+            def getresponse(self):
+                response=FakeResponse()
+                response.status=429
+                return response
+        self.gateway._connection_factory=lambda:RejectedConnection(self.calls)
+        self.assertEqual(self.request()[0],502)
+        self.assertIsNone(self.gateway.action_failure(self.token))
+        for _ in range(4):
+            self.gateway._slots.acquire()
+        try:
+            self.assertEqual(self.request()[0],429)
+            self.assertIsNone(self.gateway.action_failure(self.token))
+        finally:
+            for _ in range(4):
+                self.gateway._slots.release()
+
+    def test_cancellation_during_connect_never_sends_post(self):
+        entered=threading.Event()
+        proceed=threading.Event()
+        class PendingConnection(FakeConnection):
+            def connect(self):
+                entered.set()
+                if not proceed.wait(timeout=5):
+                    raise OSError("Test timed out")
+        upstream=PendingConnection(self.calls)
+        self.gateway._connection_factory=lambda:upstream
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending=pool.submit(self.request)
+            self.assertTrue(entered.wait(timeout=5))
+            self.gateway.revoke(self.token)
+            proceed.set()
+            self.assertEqual(pending.result(timeout=5)[0],502)
+        self.assertEqual(self.calls,[])
+        self.assertGreater(self.ledger.snapshot()["admitted_usd"],0)
+
+    def test_interim_or_incomplete_sse_usage_does_not_settle_reservation(self):
+        for kind in ("response.in_progress","response.incomplete","response.failed"):
+            event={"type":kind,"response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1}}}
+            class PartialConnection(FakeConnection):
+                def getresponse(self):
+                    response=FakeResponse(True)
+                    response.parts=[b"data: "+json.dumps(event).encode()+b"\n\n"]
+                    return response
+            self.gateway._connection_factory=lambda:PartialConnection(self.calls)
+            with self.subTest(kind=kind):
+                self.assertEqual(self.request({"model":"gpt-6.1-sol","input":"x","stream":True})[0],200)
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],3)
+        self.assertEqual(state["charged_usd"],state["admitted_usd"])
+        self.assertEqual(state["reported_estimate_usd"],0)
+
+    def test_incomplete_json_usage_does_not_settle_reservation(self):
+        class IncompleteConnection(FakeConnection):
+            def getresponse(self):
+                response=FakeResponse()
+                response.parts=[b'{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1}}']
+                return response
+        self.gateway._connection_factory=lambda:IncompleteConnection(self.calls)
+        self.assertEqual(self.request()[0],200)
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],1)
+        self.assertEqual(state["charged_usd"],state["admitted_usd"])
+
+    def test_completed_sse_overrides_interim_usage_and_preserves_cache_details(self):
+        reader=_UsageReader(True)
+        reader.feed(b'data: {"type":"response.in_progress","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n')
+        self.assertIsNone(reader.finish())
+        final={"input_tokens":120,"output_tokens":40,
+               "input_tokens_details":{"cached_tokens":70,"cache_write_tokens":15},
+               "cache_write_tokens":15}
+        event={"type":"response.completed","response":{"status":"completed","usage":final}}
+        encoded=b"data: "+json.dumps(event).encode()+b"\n\n"
+        reader.feed(encoded[:25])
+        self.assertIsNone(reader.finish())
+        reader.feed(encoded[25:])
+        self.assertEqual(reader.finish(),final)
+
+    def test_completed_type_with_incomplete_status_or_missing_final_marker_is_unknown(self):
+        reader=_UsageReader(True)
+        reader.feed(b'data: {"type":"response.completed","response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1}}}\n\n')
+        reader.feed(b'data: {"usage":{"input_tokens":1,"output_tokens":1}}\n\n')
+        self.assertIsNone(reader.finish())
+
+    def test_cancelled_partial_stream_keeps_full_reservation(self):
+        waiting=threading.Event()
+        cancelled=threading.Event()
+        class PartialResponse:
+            status=200
+            first=True
+            def read1(self,_size):
+                if self.first:
+                    self.first=False
+                    return b'data: {"type":"response.in_progress","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+                waiting.set()
+                if not cancelled.wait(timeout=5):
+                    raise OSError("Test timed out")
+                raise OSError("Cancelled")
+        class PartialConnection(FakeConnection):
+            class Sock:
+                def shutdown(self,_how):
+                    cancelled.set()
+            sock=Sock()
+            def getresponse(self):
+                return PartialResponse()
+        self.gateway._connection_factory=lambda:PartialConnection(self.calls)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending=pool.submit(self.request,{"model":"gpt-6.1-sol","input":"x","stream":True})
+            self.assertTrue(waiting.wait(timeout=5))
+            self.gateway.revoke(self.token)
+            self.assertEqual(pending.result(timeout=5)[0],200)
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],1)
+        self.assertEqual(state["charged_usd"],state["admitted_usd"])
+        self.assertEqual(state["reported_estimate_usd"],0)
+
+    def test_cancellation_after_authoritative_completion_still_settles(self):
+        waiting=threading.Event()
+        cancelled=threading.Event()
+        class CompletedResponse(FakeResponse):
+            def __init__(self):
+                super().__init__(True)
+            def read1(self,size):
+                if self.parts:
+                    return super().read1(size)
+                waiting.set()
+                if not cancelled.wait(timeout=5):
+                    raise OSError("Test timed out")
+                raise OSError("Cancelled after completion before EOF")
+        class CompletedConnection(FakeConnection):
+            class Sock:
+                def shutdown(self,_how):
+                    cancelled.set()
+            sock=Sock()
+            def getresponse(self):
+                return CompletedResponse()
+        self.gateway._connection_factory=lambda:CompletedConnection(self.calls)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending=pool.submit(self.request,{"model":"gpt-6.1-sol","input":"x","stream":True})
+            self.assertTrue(waiting.wait(timeout=5))
+            self.gateway.revoke(self.token)
+            status,payload=pending.result(timeout=5)
+            self.assertEqual(status,200)
+            self.assertIn(b"response.completed",payload)
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],0)
+        self.assertEqual(state["charged_usd"],.000080)
+        self.assertLess(state["charged_usd"],state["admitted_usd"])
+        with closing(self.ledger._connect()) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM api_admissions").fetchone()[0],"completed")
+
+    def test_upstream_failure_after_authoritative_completion_still_settles(self):
+        class CompletedResponse(FakeResponse):
+            def __init__(self):
+                super().__init__(True)
+            def read1(self,size):
+                if self.parts:
+                    return super().read1(size)
+                raise OSError("Transport lost after final provider usage")
+        class CompletedConnection(FakeConnection):
+            def getresponse(self):
+                return CompletedResponse()
+        self.gateway._connection_factory=lambda:CompletedConnection(self.calls)
+        self.assertEqual(self.request({"model":"gpt-6.1-sol","input":"x","stream":True})[0],200)
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],0)
+        self.assertEqual(state["charged_usd"],.000080)
+
+    def test_client_broken_pipe_after_reading_final_usage_still_settles(self):
+        original=self.gateway._server.RequestHandlerClass
+        class BrokenClient(original):
+            def end_headers(self):
+                super().end_headers()
+                writer=self.wfile
+                class BrokenWriter:
+                    def write(self,_data):
+                        raise BrokenPipeError("Client closed after receiving headers")
+                    def __getattr__(self,name):
+                        return getattr(writer,name)
+                self.wfile=BrokenWriter()
+        self.gateway._server.RequestHandlerClass=BrokenClient
+        self.gateway._connection_factory=lambda:FakeConnection(self.calls,streaming=True)
+        status,payload=self.request({"model":"gpt-6.1-sol","input":"x","stream":True})
+        self.assertEqual(status,200)
+        self.assertEqual(payload,b"")
+        state=self.ledger.snapshot()
+        self.assertEqual(state["unknown_usage_requests"],0)
+        self.assertEqual(state["charged_usd"],.000080)
 
 
 if __name__ == "__main__":

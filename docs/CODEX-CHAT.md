@@ -17,7 +17,9 @@ the latest message, and reserves **120 output tokens** within its 1,024-token
 window. Older messages remain in private history after they leave that window.
 An omission hint is included in the token budget.
 
-New chats offer zero, one, or two example rounds; one is the default. The
+New browser chats have an **Include an example round** checkbox, unchecked by
+default. Checking it adds one demonstration round; the backend can still
+validate zero, one, or two example rounds. The
 header retains the original model's identity and date and introduces Codex
 as a modern participant with tools. A GPT-2 turn appends only the `GPT-2>`
 generation cue to the current context; it need not follow a Human message.
@@ -48,6 +50,14 @@ message interrupts the active action. Epoch checks prevent canceled Codex
 tools or provisional GPT-2 output from committing into the newer turn.
 Enter sends; Shift+Enter inserts a newline. GPT-2 progress is displayed from
 the session's cumulative state while generation is in progress.
+
+If a GPT-2 reply was saved before a Codex action was interrupted, an explicit
+resume can persist a continuation for Codex to respond to that existing reply
+or wait. The resumed event identifies the saved reply and forbids another
+GPT-2 query; it does not replay the Human message or regenerate GPT-2. This
+continuation survives restart. In the live follow-up, Codex resumed from the
+saved reply and chose to wait for the Human without adding or regenerating
+a message.
 
 ## Components and isolation
 
@@ -159,23 +169,102 @@ finish before an operator restart when practical.
 The default allowance is **$10 per UTC day**, shared by every chat and all
 parent/subagent calls in this application. Configure it with
 `--daily-limit-usd` or the deployed `GPT2_CODEX_DAILY_LIMIT_USD` environment
-setting. The setting must be positive and finite.
+setting. The setting must be positive and finite. Chess services do not charge
+this beta ledger; only requests forwarded through this application's gateway
+are included.
 
 This is conservative local admission control. Before forwarding a request,
 the gateway durably reserves an amount based on the normalized request's
 UTF-8 byte length, 20,000 additional input-token units, and its output
 allowance. The ledger's implemented reservation rates are $5 per million
 input units and $15 per million output tokens. Requests are limited to
-750,000 bytes and at most 4,096 output tokens. Reservations are never
-refunded, including after cancellation, an upstream error, a network failure,
-or a crash. Reported usage is recorded separately and does not release a
-reservation. The browser shows admitted and remaining allowance.
+750,000 bytes and at most 4,096 output tokens.
+
+When authoritative completed usage supplies valid input/output counts, the
+ledger settles that request at the applicable tier and releases unused
+reservation. Rates per million tokens are:
+
+| Request input length | Ordinary input | Cache read | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 tokens | $2 | $0.10 | $2.50 | $10 |
+| More than 272,000 tokens | $4 | $0.20 | $5 | $15 |
+
+Reported cache-read/write counts select their rates. If cache-write counts
+are absent, all noncached input uses the applicable cache-write rate as a
+conservative upper estimate. A successful authoritative JSON completion or
+SSE `response.completed` supplies final usage. Once captured, that final
+report settles even if the client cancels or the connection closes before
+transport EOF. Requests without an authoritative final report retain the full
+original long-context reservation, including failed/canceled partial streams.
+
+The current `charged_usd` total combines settled known-usage estimates and
+unresolved holds; it drives admission and the browser's remaining allowance.
+`admitted_usd` records gross reservations in the current accounting period.
+Gross admissions can exceed the allowance as unused holds are released;
+charged amounts and new holds remain gated by the unchanged $10 default cap.
+All admission rows remain available for audit, including those excluded by
+an explicitly recorded reset.
 
 These reservations deliberately overestimate ordinary use. They are not an
 invoice calculation or an OpenAI account-wide spending cap; other services
 using the operator's key have their own accounting. Review the ledger's rates
 against provider pricing before changing models, request limits, or pricing
-assumptions. The model and standard service tier are enforced by the gateway.
+assumptions. A settled figure remains an upper estimate when billing details
+are incomplete, rather than a reconstructed provider invoice.
+The model and standard service tier are enforced by the gateway. Rates were
+checked against [OpenAI's pricing table](https://developers.openai.com/api/docs/pricing)
+on October 5, 2026 CDT.
+
+The first user-turn follow-up identified that the initial implementation kept
+known requests' inflated reservations permanently. That policy could reject
+a turn despite substantially lower reported usage. The settlement correction
+preserves the existing ledger and $10 cap. The subsequent policy uses the
+published short/long tiers and cache counters, replacing the earlier blanket
+$5/$15 settlement estimate. The final follow-up suite completed 370 Python
+tests with one existing skip, and all 52 Node frontend tests passed. The
+allowance/reset/continuation changes were deployed and verified live. The
+subsequent terminal-usage transport-race correction passed all 22 targeted
+gateway tests and was deployed after chats were idle and agent containers
+had exited.
+
+### Explicit allowance reset and development accounting
+
+The owner explicitly ordered the current allowance counter reset to zero and
+development testing excluded from the user allowance. `reset_daily_allowance()`
+records a UTC timestamp and admission-row cutoff transactionally. Earlier rows
+and their reported usage remain in the database audit history, but no longer
+charge the current allowance. Late results still update their excluded original
+row. A reset does not erase provider charges or raise the configured $10 cap.
+The live reset confirmed $0 used / $10 remaining while preserving all 22
+existing admission records. The resumed continuation then made two new
+requests; audited reconciliation of its reported tier/cache usage gives a
+combined **$0.016187** ledger estimate, **$0 unsettled holds**, and
+**$9.983813 remaining**. The private reconciliation record was retained;
+no additional model calls were made.
+
+When explicitly authorized, the operator can invoke the method from the trusted
+service account without editing/deleting ledger rows:
+
+```bash
+sudo -u gpt-2 env PYTHONPATH=/home/gpt-2/GPT-2-codex/src \
+  /home/gpt-2/.venvs/gpt2-public/bin/python - <<'PY'
+from pathlib import Path
+from gpt2_local.codex_chat_budget import DailyBudgetLedger
+
+ledger = DailyBudgetLedger(
+    Path('/home/gpt-2/.local/share/gpt2-codex/budget.sqlite3'),
+    daily_limit_usd=10,  # Match the configured allowance.
+)
+print(ledger.reset_daily_allowance())
+print(ledger.snapshot())
+PY
+```
+
+Check the recorded reset timestamp/cutoff, zero charged amount, and full
+remaining allowance before new user activity. Preserve admission row IDs and
+all reset records. Future real-model development runs must use a separate
+development ledger/gateway accounting instance. Model-free regression checks
+make no billable model requests. Chess accounting remains separate.
 
 ## Deployment and operation
 
@@ -236,10 +325,14 @@ The API is rooted beneath the opaque base path:
 
 ## Verification boundary
 
-At the final October 5, 2026 CDT / October 6 UTC checkpoint, the Linux suite
+At the initial October 5, 2026 CDT / October 6 UTC deployment checkpoint, the Linux suite
 completed **338 Python tests successfully, with one existing skipped test**,
 and **48 Node frontend tests** passed. After four additional web regressions,
-the updated targeted web suite separately passed **17 tests**.
+the updated targeted web suite separately passed **17 tests**. After the
+allowance/reset/continuation follow-up, the complete Linux suite ran **370
+tests in 24.495 seconds, with one existing skip**, and all **52 Node frontend
+tests passed**. The final transport-race correction subsequently passed
+**22 targeted Linux gateway tests in 11.129 seconds**.
 Coverage includes exact context packing, delimiter-safe streaming, durable
 admission accounting, scoped gateway validation, simulated app-server
 interaction, private-history restoration, recipient routing, request
@@ -271,9 +364,23 @@ routes remained healthy. Browser checks passed pause/Enter behavior, reload
 persistence, and creation of a fresh chat. The private capability remains
 excluded from source and this document.
 
-The final recorded ledger snapshot admitted $8.317800 of the $10 allowance;
-its reported-usage estimate was $1.083945 with one interrupted request's usage
-unknown. Reboot recovery, cold-start/load capacity, and live rollback have not
+The initial deployment's historical snapshot admitted $8.317800 and reported
+a $1.083945 usage estimate, with one interrupted request's usage unknown.
+After the first user turn, historical admissions reached $9.821355. The earlier
+blanket long-tier correction produced $1.892895 charged / $8.107105 remaining;
+those are superseded historical estimates. The owner subsequently ordered an
+audited reset to zero, exclusion of development testing, correct tier/cache
+settlement, and a saved-reply Codex continuation. The live reset preserved all
+22 earlier admissions and all five chat messages plus conversation/thread
+metadata byte for byte. Codex resumed and chose to wait without appending a
+message. Browser reload verified distinct Human/GPT-2/Codex colors, an
+unchecked example checkbox, and an enabled Send button with ready status.
+All five checked HTTPS health routes passed and existing service PIDs remained
+unchanged. The terminal-usage transport-race correction is deployed; audited
+reconciliation settled the continuation's two requests at $0.016187 total,
+leaving $9.983813 with no unresolved holds. Chat state remained preserved
+without repeating the continuation.
+Reboot recovery, cold-start/load capacity, and live rollback have not
 been established. The measured snapshots and native bridge corrections are
 recorded in
 [`VERIFICATION.md`](../VERIFICATION.md).
