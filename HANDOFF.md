@@ -49,9 +49,10 @@ environment. Git worktrees do not copy ignored local transcripts or caches.
 The owner considers the beta stable for now and has authorized committing
 and publishing this complete worktree to `origin/codex/gpt2-codex`. Continue
 in `.worktrees/gpt2-codex`; keep other applications and branches separate.
-The deployed runtime release is `30e687c` (import and HTTP attachment export).
-The handoff/publication documentation follows that runtime commit and does
-not require a service restart.
+The deployed runtime release is `ed3eafa` (owner-scoped workspace file browsing
+and downloads), following `30e687c` (import and HTTP attachment export).
+The handoff/publication documentation follows the runtime commit and does
+not require another service restart.
 
 | Resource | Current selection |
 | --- | --- |
@@ -61,7 +62,7 @@ not require a service restart.
 | Beta service | `gpt2-codex.service`, loopback 8900; scoped API gateway 8902 |
 | Private state | `/home/gpt-2/.local/share/gpt2-codex` (chat/allowance databases and native agent state) |
 | Operator configuration | Root-private `/etc/gpt2-codex.env`; contains the private URL capability and launcher settings |
-| Release and backups | Root-private `/var/lib/gpt2-codex-ops/import-release.json` and `latest-import-backup` |
+| Latest release and backups | Root-private `/var/lib/gpt2-codex-ops/files-release.json` and `latest-files-backup`; earlier import records are retained |
 | Agent runtime | Pinned Codex CLI 0.154.0, `gpt-6.1-sol`, medium reasoning |
 
 Current behavior includes explicit/automatic recipients, two independent
@@ -91,6 +92,27 @@ Import restores visible history/context/settings/evidence into a separate
 paused chat with fresh native Codex state; explicitly Resume activity to act.
 Chrome has a separate owner cookie, so use Import to transfer visible history.
 
+The **Files** toolbar button opens the current chat's isolated workspace.
+It supports folders, breadcrumbs, Up/Root, Refresh, 200-entry pages and
+individual HTTP attachment downloads up to 64 MiB. Files make no model/API
+calls and do not pause activity, change drafts or mutate the transcript.
+The owner cookie authorizes the chat before filesystem access. Open Linux
+directory descriptors prevent traversal and link redirection; symlinks,
+hard-linked files and special files are excluded. Unsupported filesystem
+platforms fail closed. Downloads may stop if the file changes mid-transfer.
+Codex's policy now tells it to share a workspace-relative path through Files.
+Importing a chat does not copy its workspace or native agent state.
+
+The file-browser rollout preserved **13 chats and 202 messages**, all owners,
+native/request IDs, metadata, settings and scheduling flags/counts/timestamps.
+Only expected startup epoch/revision increments occurred. The daily ledger
+was unchanged, all five HTTPS checks passed, and public/chess service PIDs
+were unchanged. The existing tester workspace's two regular files listed
+and streamed correctly with the deployed helper. The live browser displayed
+the current 57-message chat and its previously generated `sudan-map.txt`.
+The page was refreshed while idle; other testers should refresh while idle
+or paused to load Files. No development model call or allowance reset occurred.
+
 The in-app browser can still show unnamed **Stopped** download entries,
 including one newer than the verified successful HTTP export. Read-only
 inspection of the installed desktop download handler found an agent-control
@@ -110,7 +132,7 @@ To resume safely:
    Read the private URL locally from operator configuration when needed;
    never put its capability, cookies, credentials or private transcripts in Git.
 3. Preserve `gpt2-public`, `astra-chess`, `or-chess` and `astra-caddy` services.
-   Before a beta runtime update, let actions finish, pause affected chats,
+   Before a beta runtime update, let actions finish and confirm chats are idle,
    export the current conversation and take consistent private SQLite/source
    backups. Preserve native/request IDs and scheduling counts/timestamps.
 4. Reloading a connected active browser can cancel that action via its
@@ -118,9 +140,10 @@ To resume safely:
    draft/recipient. Verify certified HTTPS health after a beta restart; do
    not rerun paid smoke generation merely to confirm a documentation change.
 
-Latest focused checks: 86 Linux Python tests and 34 Node frontend tests,
-plus model-free real-browser import/picker/download checks and a successful
-55-message live export. Earlier full-suite/native-model evidence and remaining
+Latest focused checks: **102 Linux Python tests and 40 Node frontend tests**,
+plus model-free real-browser workspace navigation and an exact Unicode-file
+download, live owner-scoped folder display, earlier import/picker checks and
+a successful 55-message live export. Earlier full-suite/native-model evidence and remaining
 cold-start, reboot, load and live-rollback limits are recorded separately.
 
 ### Earlier implementation and rollout evidence

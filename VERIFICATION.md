@@ -2079,3 +2079,67 @@ considers the current application stable and requested publication of the
 isolated development branch with an updated continuation handoff. This final
 increment changes documentation only; no model run, allowance reset, browser
 interaction or service restart is required.
+
+### Session workspace file browsing and downloads — October 6, 2026 CDT
+
+Runtime release `ed3eafa` adds the Files toolbar button and two owner-scoped
+GET routes for directory pages and individual attachments. It exposes the
+session's workspace only, authorizing the chat owner before filesystem access.
+Linux descriptor traversal rejects absolute/parent paths and symlinks in every
+scaffolding/nested component; file opens reject symlinks, hard links and special
+files without blocking on FIFO races. Descriptors and identities remain held
+through bounded streaming. Changed files fail before headers or close an
+already-started attachment without appending a second JSON response. Limits
+are 200 entries per page, 10,000 scanned entries per folder and 64 MiB per file.
+Unsupported secure filesystem primitives return a controlled unavailable error.
+
+The new **16 Linux file tests passed in 0.120 seconds** against the isolated
+host stage. The **86 existing orchestration/archive/bridge/context tests passed
+in 1.723 seconds** there: **102 focused Python tests** total. The file tests
+cover owner isolation, strict UTF-8/query parsing, traversal, listing/paging,
+symlink scaffolding and nested links, rejected-entry scan bounds, hard links,
+FIFOs/sockets/undecodable names, ancestor/leaf replacement races, oversized and
+changing files, descriptor cleanup, incomplete attachments and broken pipes.
+The **40 Node frontend tests** pass, including actual-script folder/breadcrumb
+navigation, pagination, Unicode/HTML-like names, independent request/session
+guards, close/reopen/late-response handling, Escape/focus, empty/error states,
+size limits and preservation of active chat, draft, recipient and scroll.
+
+A model-free preview used the actual HTML, owner cookie and HTTP handler,
+with isolated temporary state and runners that reject model calls. The real
+in-app browser opened the Files dialog, navigated a nested folder, downloaded
+`résumé & notes.txt`, returned to root, displayed an empty folder and closed
+with Escape. The 29-byte UTF-8 download matched its fixture exactly (SHA-256
+`8b97e6e8a1ddecda2051c92444d73d430796a3d6076db8c38d069884446df6e3`).
+Draft and GPT-2 recipient remained intact; focus returned to Files. This is
+one successful browser download, not proof of uninterrupted download behavior
+in every browser or resolution of the earlier in-app Stopped entries.
+
+The three live source files matched their tested staged SHA-256 hashes.
+The deployment stopped only the idle beta, took root-private SQLite/source
+backups and installed those exact files. **13 chats, 202 messages, eight pause
+flags and six pending-Human flags** were preserved, with native thread/request
+IDs, owners, settings, metadata, autonomous counts and scheduling timestamps.
+The semantic records matched after startup, allowing only epoch/revision
+increments; the allowance ledger matched exactly. No active agent container
+was present. Public GPT-2, both chess services and Caddy retained their prior
+PIDs. All five certified HTTPS health checks returned 200. The initial operator
+health checker incorrectly requested `/api/health`; only that checker was
+stopped and corrected to `/health`. The running beta was not restarted again.
+
+The live page was refreshed while idle and displayed Files, the preserved
+57-message conversation and its existing 743-byte `sudan-map.txt` download
+link. The deployed helper also listed and streamed both regular files in the
+reported beta tester workspace at their exact sizes, without exposing their
+contents. A separate operator HTTP probe using the stored owner hash as a
+cookie correctly received 404: the browser's raw cookie is required. Live
+positive file-list authorization was exercised by the browser; attachment
+and cross-owner HTTP behavior were exercised by the Linux fixture tests.
+No real Codex or GPT-2 generation, API call, allowance reset, transcript import,
+workspace mutation, Caddy change or other-service restart was needed.
+
+Private release/checkpoint records are `/var/lib/gpt2-codex-ops/files-release.json`
+and `latest-files-backup`. Browser screenshots, fixture scripts and transfer
+archives remain private and untracked. The preview server/tunnel were stopped.
+This increment does not establish sustained multi-user download capacity,
+reboot recovery or a live rollback exercise.

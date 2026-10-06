@@ -227,7 +227,7 @@ rather than silently rounding evidence; exported seeds use decimal strings.
 
 **Files** opens this chat's Codex workspace without changing the conversation
 or pausing activity. Browse folders using the breadcrumbs or Up button,
-refresh to see newly created files, and select Download for an individual
+refresh to see newly created files, and click a filename to download that
 file. Browsing and downloads make no model/API calls. New and imported chats
 have their own workspaces; importing a transcript does not copy workspace
 files or the original native Codex state.
